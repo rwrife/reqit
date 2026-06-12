@@ -23,44 +23,100 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node }}
+      - name: Detect package manifest
+        id: pkg
+        shell: bash
+        run: |
+          if [ -f package.json ]; then echo "has_pkg=true" >> "$GITHUB_OUTPUT"; else echo "has_pkg=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then echo "has_lock=true" >> "$GITHUB_OUTPUT"; else echo "has_lock=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Setup Node.js ${{ matrix.node }} (with cache)
+        if: steps.pkg.outputs.has_lock == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      - name: Setup Node.js ${{ matrix.node }} (no cache)
+        if: steps.pkg.outputs.has_lock != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
       - name: Install dependencies
-        run: npm ci
+        if: steps.pkg.outputs.has_pkg == 'true'
+        shell: bash
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
 
       - name: Lint
+        if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run lint --if-present
 
       - name: Typecheck
+        if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run typecheck --if-present
 
       - name: Unit tests (vitest)
+        if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run test:unit --if-present
 
       - name: VS Code integration tests
-        if: runner.os == 'Linux'
+        if: steps.pkg.outputs.has_pkg == 'true' && runner.os == 'Linux'
         run: xvfb-run -a npm test --if-present
 
       - name: VS Code integration tests (non-Linux)
-        if: runner.os != 'Linux'
+        if: steps.pkg.outputs.has_pkg == 'true' && runner.os != 'Linux'
         run: npm test --if-present
+
+      - name: No package.json yet — skipping
+        if: steps.pkg.outputs.has_pkg != 'true'
+        run: echo "No package.json in repo yet; CI is a no-op until M1 scaffolds it."
 
   no-telemetry-check:
     name: No-telemetry import scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+
+      - name: Detect package manifest
+        id: pkg
+        shell: bash
+        run: |
+          if [ -f package.json ]; then echo "has_pkg=true" >> "$GITHUB_OUTPUT"; else echo "has_pkg=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then echo "has_lock=true" >> "$GITHUB_OUTPUT"; else echo "has_lock=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Setup Node.js (with cache)
+        if: steps.pkg.outputs.has_lock == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+
+      - name: Setup Node.js (no cache)
+        if: steps.pkg.outputs.has_lock != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        if: steps.pkg.outputs.has_pkg == 'true'
+        shell: bash
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
       - name: Build bundle
+        if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run build --if-present
+
       - name: Scan bundle for telemetry SDKs
         shell: bash
         run: |
@@ -71,5 +127,7 @@ jobs:
               echo "::error::Telemetry SDK detected in build output"
               exit 1
             fi
+            echo "OK: no telemetry SDKs found in dist/"
+          else
+            echo "No dist/ directory yet; nothing to scan."
           fi
-          echo "OK: no telemetry SDKs found in dist/"
