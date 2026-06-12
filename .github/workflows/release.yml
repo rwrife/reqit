@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm run typecheck --if-present
+      - run: npm run test:unit --if-present
+      - run: npm run build --if-present
+
+      - name: Install vsce
+        run: npm i -g @vscode/vsce
+
+      - name: Package
+        run: vsce package --no-dependencies --out pokebot-${{ github.ref_name }}.vsix
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ env.VSCE_PAT != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish --packagePath pokebot-${{ github.ref_name }}.vsix -p "$VSCE_PAT"
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pokebot-${{ github.ref_name }}.vsix
+          generate_release_notes: true

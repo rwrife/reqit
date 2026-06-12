@@ -1,0 +1,35 @@
+name: Package VSIX
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  vsix:
+    name: Build .vsix artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build --if-present
+
+      - name: Install vsce
+        run: npm i -g @vscode/vsce
+
+      - name: Package
+        run: vsce package --no-dependencies --out pokebot.vsix
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokebot-vsix
+          path: pokebot.vsix
+          if-no-files-found: error
