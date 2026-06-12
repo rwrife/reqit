@@ -1,4 +1,4 @@
-# PokeBoth — Build Plan
+# PokeBot — Build Plan
 
 A VS Code extension for testing REST APIs with first-class auth support.
 
@@ -78,7 +78,7 @@ Acceptance:
 Acceptance:
 - `# @test` blocks in `.http` files (small JS expression DSL against the response: `status === 200`, `json.id != null`, etc.)
 - "Run file" command — executes all requests sequentially, shows pass/fail summary
-- CLI mode: `npx pokeboth run requests/smoke.http --env staging` for CI usage
+- CLI mode: `npx pokebot run requests/smoke.http --env staging` for CI usage
 
 ### M7 — Marketplace release
 

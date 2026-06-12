@@ -1,4 +1,4 @@
-# PokeBoth
+# PokeBot
 
 A VS Code extension for poking HTTP services from inside your editor.
 
@@ -13,7 +13,7 @@ The existing landscape of VS Code REST extensions handles `GET /api/users` great
 - OAuth2 with PKCE and token caching
 - Per-environment secrets that aren't stored in plaintext on disk
 
-PokeBoth fixes that.
+PokeBot fixes that.
 
 ## Status
 
