@@ -8,6 +8,22 @@ A VS Code extension for testing REST APIs with first-class auth support.
 - A cloud sync service. Everything is local.
 - Telemetry. None.
 
+## Workspace Layout (hard convention)
+
+- Requests live in **`.requests/`** at the workspace root. The extension auto-discovers `.http` files in this folder (recursively).
+- Environments: `.requests/.http-env.json`.
+- Auth profiles: `.requests/.http-auth.json` (no secret material — secrets live in VS Code `SecretStorage`).
+- History: `.requests/.history/` (gitignored by default, written via a `pokebot: init workspace` command).
+- The extension MUST NOT create or read request files outside the open workspace.
+
+## Local-Only Data Contract (non-negotiable)
+
+- No network traffic to any first-party PokeBot server. There is no such server.
+- Outbound HTTP only happens as a direct result of a user-initiated request (`Send Request`, `Run file`, refresh-on-401, OAuth2 redemption).
+- No telemetry, no crash reports, no "check for updates" pings. VS Code Marketplace handles updates.
+- Secrets only via `SecretStorage`; never written to disk in plaintext, never logged, never copied to clipboard except via an explicit user command that warns first.
+- CI includes an allow-list check that fails the build if the bundle imports known telemetry SDKs.
+
 ## Tech Stack
 
 - TypeScript (strict), Node >= 20
@@ -25,6 +41,8 @@ A VS Code extension for testing REST APIs with first-class auth support.
 Acceptance:
 - `npm install && npm run build && npm run test` work
 - `F5` launches a dev VS Code with the extension loaded
+- `pokebot: Init Workspace` command scaffolds `.requests/` with a sample `hello.http`
+- Tree view "PokeBot Requests" lists `.http` files discovered under `.requests/`
 - Open a `.http` file, see syntax highlighting for the basic format
 - Codelens "Send Request" above a request → response shown in a webview panel
 - Method + URL + headers + body all parsed
