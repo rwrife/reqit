@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { assertInsideWorkspace } from '../core/pathGuard.js';
 
 const SAMPLE_HTTP = `### hello
 # Edit, then click "Send Request" above the request line.
@@ -32,10 +33,19 @@ export async function initWorkspace(): Promise<void> {
     return;
   }
   const root = vscode.Uri.joinPath(folder.uri, '.requests');
+  // Hard guard: every write must resolve inside the workspace folder.
+  const rootFsPath = folder.uri.fsPath;
+  assertInsideWorkspace(rootFsPath, root.fsPath);
   await vscode.workspace.fs.createDirectory(root);
-  await writeIfMissing(vscode.Uri.joinPath(root, 'hello.http'), SAMPLE_HTTP);
-  await writeIfMissing(vscode.Uri.joinPath(root, '.http-env.json'), ENV_JSON);
-  await writeIfMissing(vscode.Uri.joinPath(root, '.gitignore'), GITIGNORE);
+  for (const [name, body] of [
+    ['hello.http', SAMPLE_HTTP],
+    ['.http-env.json', ENV_JSON],
+    ['.gitignore', GITIGNORE],
+  ] as const) {
+    const target = vscode.Uri.joinPath(root, name);
+    assertInsideWorkspace(rootFsPath, target.fsPath);
+    await writeIfMissing(target, body);
+  }
   vscode.window.showInformationMessage('PokeBot: .requests/ scaffolded.');
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'hello.http'));
   await vscode.window.showTextDocument(doc);
