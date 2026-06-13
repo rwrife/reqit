@@ -1,0 +1,76 @@
+{
+  "name": "pokebot",
+  "displayName": "PokeBot",
+  "description": "Test REST APIs from VS Code with first-class auth (mTLS, JWT, OAuth2). Local-only. No telemetry.",
+  "version": "0.0.1",
+  "publisher": "rwrife",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rwrife/pokebot.git"
+  },
+  "categories": ["Other", "Testing"],
+  "activationEvents": [
+    "onLanguage:http",
+    "onCommand:pokebot.initWorkspace",
+    "workspaceContains:.requests/**/*.http"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "http",
+        "aliases": ["HTTP", "http"],
+        "extensions": [".http", ".rest"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "http",
+        "scopeName": "source.http",
+        "path": "./syntaxes/http.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "pokebot.initWorkspace",
+        "title": "PokeBot: Init Workspace",
+        "category": "PokeBot"
+      },
+      {
+        "command": "pokebot.sendRequest",
+        "title": "PokeBot: Send Request",
+        "category": "PokeBot"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node ./esbuild.mjs",
+    "watch": "node ./esbuild.mjs --watch",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "esbuild": "^0.23.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "undici": "^6.19.0",
+    "zod": "^3.23.0"
+  }
+}

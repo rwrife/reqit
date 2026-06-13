@@ -19,6 +19,20 @@ PokeBot fixes that.
 
 🚧 Pre-alpha. Following the plan in [`PLAN.md`](./PLAN.md).
 
+**M1 landed:** TypeScript + esbuild scaffold, `.http` parser, `PokeBot: Init Workspace` command, `Send Request` codelens that fires undici and renders the response in a webview.
+
+## Develop
+
+```
+npm install
+npm run build       # esbuild → dist/extension.js
+npm run lint        # eslint
+npm run typecheck   # tsc --noEmit
+npm run test:unit   # vitest (pure parser tests)
+```
+
+Press `F5` in VS Code to launch the Extension Development Host.
+
 ## License
 
 MIT
