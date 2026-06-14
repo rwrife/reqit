@@ -54,6 +54,16 @@
         "title": "PokeBot: Refresh Requests",
         "category": "PokeBot",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "pokebot.selectEnv",
+        "title": "PokeBot: Select Environment",
+        "category": "PokeBot"
+      },
+      {
+        "command": "pokebot.setSecret",
+        "title": "PokeBot: Set Secret",
+        "category": "PokeBot"
       }
     ],
     "viewsContainers": {

@@ -3,22 +3,27 @@ import { assertInsideWorkspace } from '../core/pathGuard.js';
 
 const SAMPLE_HTTP = `### hello
 # Edit, then click "Send Request" above the request line.
-GET https://httpbin.org/get
+GET {{baseUrl}}/get
 Accept: application/json
 
 ### post-json
-POST https://httpbin.org/post
+POST {{baseUrl}}/post
 Content-Type: application/json
+X-Request-Id: {{$guid}}
 
 {
-  "hello": "pokebot"
+  "hello": "pokebot",
+  "ts": {{$timestamp}}
 }
 `;
 
 const ENV_JSON = `{
-  "default": {},
+  "default": {
+    "baseUrl": "https://httpbin.org"
+  },
   "local": {
-    "baseUrl": "http://localhost:3000"
+    "baseUrl": "http://localhost:3000",
+    "apiKey": { "$secret": true }
   }
 }
 `;
