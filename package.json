@@ -18,6 +18,7 @@
   "activationEvents": [
     "onLanguage:http",
     "onCommand:pokebot.initWorkspace",
+    "workspaceContains:.requests",
     "workspaceContains:.requests/**/*.http"
   ],
   "main": "./dist/extension.js",
@@ -47,8 +48,42 @@
         "command": "pokebot.sendRequest",
         "title": "PokeBot: Send Request",
         "category": "PokeBot"
+      },
+      {
+        "command": "pokebot.refreshRequests",
+        "title": "PokeBot: Refresh Requests",
+        "category": "PokeBot",
+        "icon": "$(refresh)"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pokebot",
+          "title": "PokeBot",
+          "icon": "$(symbol-event)"
+        }
+      ]
+    },
+    "views": {
+      "pokebot": [
+        {
+          "id": "pokebot.requests",
+          "name": "Requests",
+          "icon": "$(symbol-event)",
+          "contextualTitle": "PokeBot Requests"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "pokebot.refreshRequests",
+          "when": "view == pokebot.requests",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "node ./esbuild.mjs",

@@ -3,10 +3,34 @@ import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { renderResponse } from './responseView.js';
 import { initWorkspace } from './initWorkspace.js';
+import { RequestsTreeProvider } from './requestsTree.js';
 
 export function activate(context: vscode.ExtensionContext): void {
+  const treeProvider = new RequestsTreeProvider();
+  const treeView = vscode.window.createTreeView('pokebot.requests', {
+    treeDataProvider: treeProvider,
+    showCollapseAll: true,
+  });
+  context.subscriptions.push(treeView);
+
+  // Watch .requests/ for changes to keep the tree fresh, without polling.
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(folder, '.requests/**/*.http'),
+    );
+    watcher.onDidCreate(() => treeProvider.refresh());
+    watcher.onDidChange(() => treeProvider.refresh());
+    watcher.onDidDelete(() => treeProvider.refresh());
+    context.subscriptions.push(watcher);
+  }
+
   context.subscriptions.push(
-    vscode.commands.registerCommand('pokebot.initWorkspace', () => initWorkspace()),
+    vscode.commands.registerCommand('pokebot.initWorkspace', async () => {
+      await initWorkspace();
+      treeProvider.refresh();
+    }),
+    vscode.commands.registerCommand('pokebot.refreshRequests', () => treeProvider.refresh()),
     vscode.commands.registerCommand(
       'pokebot.sendRequest',
       async (arg?: { documentUri: string; requestLineIndex: number }) => {
