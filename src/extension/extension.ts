@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
+import { substituteRequest } from '../core/substitute.js';
 import { renderResponse } from './responseView.js';
 import { initWorkspace } from './initWorkspace.js';
 import { RequestsTreeProvider } from './requestsTree.js';
+import { EnvManager } from './envManager.js';
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
@@ -12,6 +14,10 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true,
   });
   context.subscriptions.push(treeView);
+
+  const envManager = new EnvManager(context);
+  context.subscriptions.push(envManager);
+  void envManager.init();
 
   // Watch .requests/ for changes to keep the tree fresh, without polling.
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -31,6 +37,22 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('pokebot.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('pokebot.selectEnv', () => envManager.pickEnv()),
+    vscode.commands.registerCommand('pokebot.setSecret', async () => {
+      const secrets = envManager.listSecrets();
+      if (secrets.length === 0) {
+        vscode.window.showInformationMessage(
+          'PokeBot: no secrets declared in .http-env.json (use { "$secret": true }).',
+        );
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        secrets.map((s) => ({ label: `${s.env}.${s.name}`, env: s.env, name: s.name })),
+        { placeHolder: 'Select secret to set' },
+      );
+      if (!pick) return;
+      await envManager.setSecret(pick.env, pick.name);
+    }),
     vscode.commands.registerCommand(
       'pokebot.sendRequest',
       async (arg?: { documentUri: string; requestLineIndex: number }) => {
@@ -45,7 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showErrorMessage('PokeBot: request not found at codelens position.');
           return;
         }
-        await runRequest(context, req);
+        await runRequest(context, req, envManager);
       },
     ),
     vscode.languages.registerCodeLensProvider({ language: 'http' }, new HttpCodeLensProvider()),
@@ -73,10 +95,29 @@ class HttpCodeLensProvider implements vscode.CodeLensProvider {
 async function runRequest(
   context: vscode.ExtensionContext,
   req: ParsedRequest,
+  envManager: EnvManager,
 ): Promise<void> {
+  const resolve = await envManager.buildResolver();
+  const substituted = substituteRequest(
+    { url: req.url, headers: req.headers, body: req.body },
+    { resolve },
+  );
+  if (substituted.diagnostics.length > 0) {
+    const names = [...new Set(substituted.diagnostics.map((d) => d.variable))].join(', ');
+    vscode.window.showErrorMessage(
+      `PokeBot: unresolved variables (${envManager.active}): ${names}`,
+    );
+    return;
+  }
+  const requestForUndici: ParsedRequest = {
+    ...req,
+    url: substituted.url,
+    headers: substituted.headers,
+    body: substituted.body,
+  };
   let opts;
   try {
-    opts = toUndiciRequest(req);
+    opts = toUndiciRequest(requestForUndici);
   } catch (err) {
     vscode.window.showErrorMessage(`PokeBot: invalid request — ${(err as Error).message}`);
     return;

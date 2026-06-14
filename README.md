@@ -21,6 +21,26 @@ PokeBot fixes that.
 
 **M1 landed:** TypeScript + esbuild scaffold, `.http` parser, `PokeBot: Init Workspace` command, `Send Request` codelens that fires undici and renders the response in a webview.
 
+**M2 in progress:** `.requests/.http-env.json` with named environments, status-bar env picker, `{{var}}` substitution (URL + headers + body), built-ins `{{$guid}}` / `{{$timestamp}}` / `{{$datetime iso|rfc1123}}` / `{{$randomInt min max}}`, and per-secret values via VS Code `SecretStorage` (`{ "$secret": true }`).
+
+### Environments
+
+Define `.requests/.http-env.json`:
+
+```json
+{
+  "default": { "baseUrl": "https://api.example.com" },
+  "staging": {
+    "baseUrl": "https://staging.example.com",
+    "apiKey": { "$secret": true }
+  }
+}
+```
+
+- Switch the active env from the status-bar item (`PokeBot: <env>`).
+- Reference vars anywhere with `{{baseUrl}}`, `{{apiKey}}`, etc.
+- Secrets are prompted on first use and stored in VS Code `SecretStorage` — never written to disk in plaintext. Re-prompt with **PokeBot: Set Secret**.
+
 ## Develop
 
 ```
