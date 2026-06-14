@@ -28,6 +28,6 @@ export function isInsideWorkspace(root: string, target: string): boolean {
  */
 export function assertInsideWorkspace(root: string, target: string): void {
   if (!isInsideWorkspace(root, target)) {
-    throw new Error(`PokeBot: refusing to write outside workspace: ${target}`);
+    throw new Error(`Reqit: refusing to write outside workspace: ${target}`);
   }
 }

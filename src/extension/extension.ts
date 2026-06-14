@@ -9,7 +9,7 @@ import { EnvManager } from './envManager.js';
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
-  const treeView = vscode.window.createTreeView('pokebot.requests', {
+  const treeView = vscode.window.createTreeView('reqit.requests', {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
   });
@@ -32,17 +32,17 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('pokebot.initWorkspace', async () => {
+    vscode.commands.registerCommand('reqit.initWorkspace', async () => {
       await initWorkspace();
       treeProvider.refresh();
     }),
-    vscode.commands.registerCommand('pokebot.refreshRequests', () => treeProvider.refresh()),
-    vscode.commands.registerCommand('pokebot.selectEnv', () => envManager.pickEnv()),
-    vscode.commands.registerCommand('pokebot.setSecret', async () => {
+    vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
+    vscode.commands.registerCommand('reqit.setSecret', async () => {
       const secrets = envManager.listSecrets();
       if (secrets.length === 0) {
         vscode.window.showInformationMessage(
-          'PokeBot: no secrets declared in .http-env.json (use { "$secret": true }).',
+          'Reqit: no secrets declared in .http-env.json (use { "$secret": true }).',
         );
         return;
       }
@@ -54,17 +54,17 @@ export function activate(context: vscode.ExtensionContext): void {
       await envManager.setSecret(pick.env, pick.name);
     }),
     vscode.commands.registerCommand(
-      'pokebot.sendRequest',
+      'reqit.sendRequest',
       async (arg?: { documentUri: string; requestLineIndex: number }) => {
         if (!arg) {
-          vscode.window.showWarningMessage('PokeBot: use the Send Request codelens.');
+          vscode.window.showWarningMessage('Reqit: use the Send Request codelens.');
           return;
         }
         const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(arg.documentUri));
         const parsed = parseHttpFile(doc.getText());
         const req = parsed.requests.find((r) => r.requestLineIndex === arg.requestLineIndex);
         if (!req) {
-          vscode.window.showErrorMessage('PokeBot: request not found at codelens position.');
+          vscode.window.showErrorMessage('Reqit: request not found at codelens position.');
           return;
         }
         await runRequest(context, req, envManager);
@@ -85,7 +85,7 @@ class HttpCodeLensProvider implements vscode.CodeLensProvider {
       const range = new vscode.Range(r.requestLineIndex, 0, r.requestLineIndex, 0);
       return new vscode.CodeLens(range, {
         title: '▶ Send Request',
-        command: 'pokebot.sendRequest',
+        command: 'reqit.sendRequest',
         arguments: [{ documentUri: document.uri.toString(), requestLineIndex: r.requestLineIndex }],
       });
     });
@@ -105,7 +105,7 @@ async function runRequest(
   if (substituted.diagnostics.length > 0) {
     const names = [...new Set(substituted.diagnostics.map((d) => d.variable))].join(', ');
     vscode.window.showErrorMessage(
-      `PokeBot: unresolved variables (${envManager.active}): ${names}`,
+      `Reqit: unresolved variables (${envManager.active}): ${names}`,
     );
     return;
   }
@@ -119,7 +119,7 @@ async function runRequest(
   try {
     opts = toUndiciRequest(requestForUndici);
   } catch (err) {
-    vscode.window.showErrorMessage(`PokeBot: invalid request — ${(err as Error).message}`);
+    vscode.window.showErrorMessage(`Reqit: invalid request — ${(err as Error).message}`);
     return;
   }
 
@@ -145,7 +145,7 @@ async function runRequest(
     });
   } catch (err) {
     const elapsedMs = Date.now() - started;
-    vscode.window.showErrorMessage(`PokeBot: request failed — ${(err as Error).message}`);
+    vscode.window.showErrorMessage(`Reqit: request failed — ${(err as Error).message}`);
     renderResponse(context, {
       request: opts,
       status: 0,

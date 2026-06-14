@@ -14,8 +14,8 @@ let panel: vscode.WebviewPanel | undefined;
 export function renderResponse(context: vscode.ExtensionContext, r: ResponseRender): void {
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
-      'pokebot.response',
-      'PokeBot Response',
+      'reqit.response',
+      'Reqit Response',
       vscode.ViewColumn.Beside,
       { enableScripts: false, retainContextWhenHidden: true },
     );

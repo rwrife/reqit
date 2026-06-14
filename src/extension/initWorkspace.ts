@@ -12,7 +12,7 @@ Content-Type: application/json
 X-Request-Id: {{$guid}}
 
 {
-  "hello": "pokebot",
+  "hello": "reqit",
   "ts": {{$timestamp}}
 }
 `;
@@ -34,7 +34,7 @@ const GITIGNORE = `.history/
 export async function initWorkspace(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    vscode.window.showErrorMessage('PokeBot: open a workspace folder first.');
+    vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
     return;
   }
   const root = vscode.Uri.joinPath(folder.uri, '.requests');
@@ -51,7 +51,7 @@ export async function initWorkspace(): Promise<void> {
     assertInsideWorkspace(rootFsPath, target.fsPath);
     await writeIfMissing(target, body);
   }
-  vscode.window.showInformationMessage('PokeBot: .requests/ scaffolded.');
+  vscode.window.showInformationMessage('Reqit: .requests/ scaffolded.');
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'hello.http'));
   await vscode.window.showTextDocument(doc);
 }

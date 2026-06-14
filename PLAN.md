@@ -1,4 +1,4 @@
-# PokeBot — Build Plan
+# Reqit — Build Plan
 
 A VS Code extension for testing REST APIs with first-class auth support.
 
@@ -13,12 +13,12 @@ A VS Code extension for testing REST APIs with first-class auth support.
 - Requests live in **`.requests/`** at the workspace root. The extension auto-discovers `.http` files in this folder (recursively).
 - Environments: `.requests/.http-env.json`.
 - Auth profiles: `.requests/.http-auth.json` (no secret material — secrets live in VS Code `SecretStorage`).
-- History: `.requests/.history/` (gitignored by default, written via a `pokebot: init workspace` command).
+- History: `.requests/.history/` (gitignored by default, written via a `reqit: init workspace` command).
 - The extension MUST NOT create or read request files outside the open workspace.
 
 ## Local-Only Data Contract (non-negotiable)
 
-- No network traffic to any first-party PokeBot server. There is no such server.
+- No network traffic to any first-party Reqit server. There is no such server.
 - Outbound HTTP only happens as a direct result of a user-initiated request (`Send Request`, `Run file`, refresh-on-401, OAuth2 redemption).
 - No telemetry, no crash reports, no "check for updates" pings. VS Code Marketplace handles updates.
 - Secrets only via `SecretStorage`; never written to disk in plaintext, never logged, never copied to clipboard except via an explicit user command that warns first.
@@ -41,8 +41,8 @@ A VS Code extension for testing REST APIs with first-class auth support.
 Acceptance:
 - `npm install && npm run build && npm run test` work
 - `F5` launches a dev VS Code with the extension loaded
-- `pokebot: Init Workspace` command scaffolds `.requests/` with a sample `hello.http`
-- Tree view "PokeBot Requests" lists `.http` files discovered under `.requests/`
+- `reqit: Init Workspace` command scaffolds `.requests/` with a sample `hello.http`
+- Tree view "Reqit Requests" lists `.http` files discovered under `.requests/`
 - Open a `.http` file, see syntax highlighting for the basic format
 - Codelens "Send Request" above a request → response shown in a webview panel
 - Method + URL + headers + body all parsed
@@ -96,7 +96,7 @@ Acceptance:
 Acceptance:
 - `# @test` blocks in `.http` files (small JS expression DSL against the response: `status === 200`, `json.id != null`, etc.)
 - "Run file" command — executes all requests sequentially, shows pass/fail summary
-- CLI mode: `npx pokebot run requests/smoke.http --env staging` for CI usage
+- CLI mode: `npx reqit run requests/smoke.http --env staging` for CI usage
 
 ### M7 — Marketplace release
 

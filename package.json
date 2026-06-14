@@ -1,7 +1,7 @@
 {
-  "name": "pokebot",
-  "displayName": "PokeBot",
-  "description": "Test REST APIs from VS Code with first-class auth (mTLS, JWT, OAuth2). Local-only. No telemetry.",
+  "name": "reqit",
+  "displayName": "Reqit",
+  "description": "Test it before you req it! Test REST APIs from VS Code with first-class auth (mTLS, JWT, OAuth2). Local-only. No telemetry.",
   "version": "0.0.1",
   "publisher": "rwrife",
   "private": true,
@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/rwrife/pokebot.git"
+    "url": "https://github.com/rwrife/reqit.git"
   },
   "categories": ["Other", "Testing"],
   "activationEvents": [
     "onLanguage:http",
-    "onCommand:pokebot.initWorkspace",
+    "onCommand:reqit.initWorkspace",
     "workspaceContains:.requests",
     "workspaceContains:.requests/**/*.http"
   ],
@@ -40,56 +40,56 @@
     ],
     "commands": [
       {
-        "command": "pokebot.initWorkspace",
-        "title": "PokeBot: Init Workspace",
-        "category": "PokeBot"
+        "command": "reqit.initWorkspace",
+        "title": "Reqit: Init Workspace",
+        "category": "Reqit"
       },
       {
-        "command": "pokebot.sendRequest",
-        "title": "PokeBot: Send Request",
-        "category": "PokeBot"
+        "command": "reqit.sendRequest",
+        "title": "Reqit: Send Request",
+        "category": "Reqit"
       },
       {
-        "command": "pokebot.refreshRequests",
-        "title": "PokeBot: Refresh Requests",
-        "category": "PokeBot",
+        "command": "reqit.refreshRequests",
+        "title": "Reqit: Refresh Requests",
+        "category": "Reqit",
         "icon": "$(refresh)"
       },
       {
-        "command": "pokebot.selectEnv",
-        "title": "PokeBot: Select Environment",
-        "category": "PokeBot"
+        "command": "reqit.selectEnv",
+        "title": "Reqit: Select Environment",
+        "category": "Reqit"
       },
       {
-        "command": "pokebot.setSecret",
-        "title": "PokeBot: Set Secret",
-        "category": "PokeBot"
+        "command": "reqit.setSecret",
+        "title": "Reqit: Set Secret",
+        "category": "Reqit"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "pokebot",
-          "title": "PokeBot",
+          "id": "reqit",
+          "title": "Reqit",
           "icon": "$(symbol-event)"
         }
       ]
     },
     "views": {
-      "pokebot": [
+      "reqit": [
         {
-          "id": "pokebot.requests",
+          "id": "reqit.requests",
           "name": "Requests",
           "icon": "$(symbol-event)",
-          "contextualTitle": "PokeBot Requests"
+          "contextualTitle": "Reqit Requests"
         }
       ]
     },
     "menus": {
       "view/title": [
         {
-          "command": "pokebot.refreshRequests",
-          "when": "view == pokebot.requests",
+          "command": "reqit.refreshRequests",
+          "when": "view == reqit.requests",
           "group": "navigation"
         }
       ]

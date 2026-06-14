@@ -54,14 +54,14 @@ jobs:
 
       - name: Package
         if: steps.pkg.outputs.has_pkg == 'true'
-        run: vsce package --no-dependencies --out pokebot.vsix
+        run: vsce package --no-dependencies --out reqit.vsix
 
       - name: Upload artifact
         if: steps.pkg.outputs.has_pkg == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: pokebot-vsix
-          path: pokebot.vsix
+          name: reqit-vsix
+          path: reqit.vsix
           if-no-files-found: error
 
       - name: No package.json yet — skipping

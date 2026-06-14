@@ -7,8 +7,8 @@ import {
   type EnvFile,
 } from '../core/env.js';
 
-const ACTIVE_ENV_KEY = 'pokebot.activeEnv';
-const SECRET_PREFIX = 'pokebot.secret.';
+const ACTIVE_ENV_KEY = 'reqit.activeEnv';
+const SECRET_PREFIX = 'reqit.secret.';
 
 /**
  * Loads `.requests/.http-env.json`, tracks the active environment, exposes a
@@ -30,8 +30,8 @@ export class EnvManager implements vscode.Disposable {
       vscode.StatusBarAlignment.Right,
       100,
     );
-    this.statusItem.command = 'pokebot.selectEnv';
-    this.statusItem.tooltip = 'PokeBot: switch environment';
+    this.statusItem.command = 'reqit.selectEnv';
+    this.statusItem.tooltip = 'Reqit: switch environment';
     this.disposables.push(this.statusItem, this.emitter);
 
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -100,7 +100,7 @@ export class EnvManager implements vscode.Disposable {
     const envs = this.availableEnvs;
     if (envs.length === 0) {
       vscode.window.showInformationMessage(
-        'PokeBot: no environments defined. Run "PokeBot: Init Workspace" to scaffold one.',
+        'Reqit: no environments defined. Run "Reqit: Init Workspace" to scaffold one.',
       );
       return;
     }
@@ -109,7 +109,7 @@ export class EnvManager implements vscode.Disposable {
         label: name,
         description: name === this.activeEnv ? '(active)' : undefined,
       })),
-      { placeHolder: 'Select PokeBot environment' },
+      { placeHolder: 'Select Reqit environment' },
     );
     if (!pick) return;
     await this.setActive(pick.label);
@@ -183,7 +183,7 @@ export class EnvManager implements vscode.Disposable {
       if (existing !== undefined) return existing;
     }
     const value = await vscode.window.showInputBox({
-      title: `PokeBot secret: ${envName}.${varName}`,
+      title: `Reqit secret: ${envName}.${varName}`,
       prompt: 'Stored in VS Code SecretStorage. Never written to disk in plaintext.',
       password: true,
       ignoreFocusOut: true,
@@ -195,15 +195,15 @@ export class EnvManager implements vscode.Disposable {
 
   private render(): void {
     if (this.loadError) {
-      this.statusItem.text = `$(warning) PokeBot: env error`;
+      this.statusItem.text = `$(warning) Reqit: env error`;
       this.statusItem.tooltip = `Failed to load .http-env.json: ${this.loadError}`;
       return;
     }
     const known = this.availableEnvs.includes(this.activeEnv);
     const icon = known ? '$(symbol-namespace)' : '$(question)';
-    this.statusItem.text = `${icon} PokeBot: ${this.activeEnv}`;
+    this.statusItem.text = `${icon} Reqit: ${this.activeEnv}`;
     this.statusItem.tooltip = known
-      ? 'PokeBot environment — click to switch'
+      ? 'Reqit environment — click to switch'
       : `Active env "${this.activeEnv}" is not defined in .http-env.json`;
   }
 }
