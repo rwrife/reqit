@@ -44,6 +44,12 @@ export interface ParsedRequest {
   headers: ParsedHeader[];
   /** Raw body string (no trailing newline). Empty string if no body. */
   body: string;
+  /**
+   * Directives parsed from `# @key value` / `// @key value` lines in this
+   * section's preamble (before the request line). Multi-occurrence keys keep
+   * the last value. Common keys: `auth`, `name`.
+   */
+  directives: Record<string, string>;
   /** 0-indexed line in source where the request line starts. */
   requestLineIndex: number;
   /** 0-indexed line range [start, endExclusive) covering this request section. */
@@ -133,10 +139,21 @@ export function parseHttpFile(source: string): ParseResult {
 
   for (const section of sections) {
     // Find the request line: first non-blank, non-comment line in section.
+    // Along the way, collect `@key value` directives from comment lines.
+    const directives: Record<string, string> = {};
     let i = section.start;
     while (i < section.end) {
       const l = lines[i];
-      if (l.trim() === '' || isCommentLine(l)) {
+      if (l.trim() === '') {
+        i++;
+        continue;
+      }
+      if (isCommentLine(l)) {
+        const stripped = l.trimStart().replace(/^(#|\/\/)\s*/, '');
+        const m = stripped.match(/^@([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.+?))?\s*$/);
+        if (m) {
+          directives[m[1]] = (m[2] ?? '').trim();
+        }
         i++;
         continue;
       }
@@ -189,6 +206,7 @@ export function parseHttpFile(source: string): ParseResult {
       url: parsed.url,
       headers,
       body,
+      directives,
       requestLineIndex: reqLineIdx,
       startLine: section.start,
       endLine: section.end,
