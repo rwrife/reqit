@@ -1,8 +1,8 @@
-# PokeBot
+# Reqit
 
-A VS Code extension for poking HTTP services from inside your editor.
+**Test it before you req it!**
 
-> "It's like REST Client, but it actually cares about auth."
+A VS Code extension for testing HTTP services from inside your editor — with first-class auth (mTLS, JWT, OAuth2).
 
 ## Why
 
@@ -13,13 +13,13 @@ The existing landscape of VS Code REST extensions handles `GET /api/users` great
 - OAuth2 with PKCE and token caching
 - Per-environment secrets that aren't stored in plaintext on disk
 
-PokeBot fixes that.
+Reqit fixes that.
 
 ## Status
 
 🚧 Pre-alpha. Following the plan in [`PLAN.md`](./PLAN.md).
 
-**M1 landed:** TypeScript + esbuild scaffold, `.http` parser, `PokeBot: Init Workspace` command, `Send Request` codelens that fires undici and renders the response in a webview.
+**M1 landed:** TypeScript + esbuild scaffold, `.http` parser, `Reqit: Init Workspace` command, `Send Request` codelens that fires undici and renders the response in a webview.
 
 **M2 in progress:** `.requests/.http-env.json` with named environments, status-bar env picker, `{{var}}` substitution (URL + headers + body), built-ins `{{$guid}}` / `{{$timestamp}}` / `{{$datetime iso|rfc1123}}` / `{{$randomInt min max}}`, and per-secret values via VS Code `SecretStorage` (`{ "$secret": true }`).
 
@@ -37,9 +37,9 @@ Define `.requests/.http-env.json`:
 }
 ```
 
-- Switch the active env from the status-bar item (`PokeBot: <env>`).
+- Switch the active env from the status-bar item (`Reqit: <env>`).
 - Reference vars anywhere with `{{baseUrl}}`, `{{apiKey}}`, etc.
-- Secrets are prompted on first use and stored in VS Code `SecretStorage` — never written to disk in plaintext. Re-prompt with **PokeBot: Set Secret**.
+- Secrets are prompted on first use and stored in VS Code `SecretStorage` — never written to disk in plaintext. Re-prompt with **Reqit: Set Secret**.
 
 ## Develop
 

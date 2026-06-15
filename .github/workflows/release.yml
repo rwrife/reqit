@@ -26,16 +26,16 @@ jobs:
         run: npm i -g @vscode/vsce
 
       - name: Package
-        run: vsce package --no-dependencies --out pokebot-${{ github.ref_name }}.vsix
+        run: vsce package --no-dependencies --out reqit-${{ github.ref_name }}.vsix
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: vsce publish --packagePath pokebot-${{ github.ref_name }}.vsix -p "$VSCE_PAT"
+        run: vsce publish --packagePath reqit-${{ github.ref_name }}.vsix -p "$VSCE_PAT"
 
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: pokebot-${{ github.ref_name }}.vsix
+          files: reqit-${{ github.ref_name }}.vsix
           generate_release_notes: true

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 
 /**
- * Tree view backing "PokeBot Requests".
+ * Tree view backing "Reqit Requests".
  *
  * Scope: `.requests/` (recursive) under the first workspace folder.
  * Grouping: subfolders are folder nodes, `.http` files are file nodes, each
@@ -27,7 +27,7 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
 
     if (!node) {
       if (!(await dirExists(root))) {
-        return [new MessageNode('Run "PokeBot: Init Workspace" to create .requests/')];
+        return [new MessageNode('Run "Reqit: Init Workspace" to create .requests/')];
       }
       return listDir(root);
     }
@@ -98,7 +98,7 @@ class FolderNode {
     const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.Collapsed);
     item.resourceUri = this.uri;
     item.iconPath = vscode.ThemeIcon.Folder;
-    item.contextValue = 'pokebot.folder';
+    item.contextValue = 'reqit.folder';
     return item;
   }
 }
@@ -113,7 +113,7 @@ class FileNode {
     const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.Collapsed);
     item.resourceUri = this.uri;
     item.iconPath = vscode.ThemeIcon.File;
-    item.contextValue = 'pokebot.file';
+    item.contextValue = 'reqit.file';
     item.command = {
       command: 'vscode.open',
       title: 'Open',
@@ -138,9 +138,9 @@ class RequestNode {
     item.description = `${this.request.method}`;
     item.tooltip = `${this.request.method} ${this.request.url}`;
     item.iconPath = new vscode.ThemeIcon('symbol-event');
-    item.contextValue = 'pokebot.request';
+    item.contextValue = 'reqit.request';
     item.command = {
-      command: 'pokebot.sendRequest',
+      command: 'reqit.sendRequest',
       title: '▶ Send Request',
       arguments: [
         {
@@ -161,7 +161,7 @@ class MessageNode {
   }
   toTreeItem(): vscode.TreeItem {
     const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.None);
-    item.contextValue = 'pokebot.message';
+    item.contextValue = 'reqit.message';
     return item;
   }
 }
