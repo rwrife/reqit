@@ -35,6 +35,7 @@
  */
 import { z } from 'zod';
 import { HMAC_ALGS, signJwtHmac, type HmacAlg } from './jwt.js';
+import { oauth2AuthSchema, type OAuth2Auth } from './oauth2.js';
 
 export const secretMarkerSchema = z.object({ $secret: z.literal(true) });
 export type SecretMarker = z.infer<typeof secretMarkerSchema>;
@@ -128,6 +129,7 @@ export const authProfileSchema = z.union([
   jwtGeneratedAuthSchema,
   clientCertPemSchema,
   clientCertPfxSchema,
+  oauth2AuthSchema,
 ]);
 
 export const authFileSchema = z.record(z.string(), authProfileSchema);
@@ -188,6 +190,10 @@ export function listAuthSecretRefs(file: AuthFile): Array<{ profile: string; fie
       case 'clientCert':
         if (prof.passphrase !== undefined) check('passphrase', prof.passphrase);
         break;
+      case 'oauth2':
+        if (prof.flow === 'clientCredentials') check('clientSecret', prof.clientSecret);
+        else if (prof.clientSecret !== undefined) check('clientSecret', prof.clientSecret);
+        break;
     }
   }
   return out;
@@ -223,6 +229,16 @@ export interface ResolvedAuth {
  */
 export type AuthSecretResolver = (profile: string, field: string) => string | undefined;
 
+/**
+ * Resolver invoked for oauth2 profiles. Returns a still-valid access token
+ * (or `undefined` if one cannot be obtained — `applyAuth` will throw in that
+ * case). The extension layer owns acquisition, caching, and refresh.
+ */
+export type OAuth2TokenResolver = (
+  profile: string,
+  auth: OAuth2Auth,
+) => { accessToken: string; tokenType?: string } | undefined;
+
 export class AuthApplyError extends Error {
   constructor(
     message: string,
@@ -252,6 +268,8 @@ export interface ApplyAuthOptions {
   name: string;
   profile: AuthProfile;
   resolve: AuthSecretResolver;
+  /** Resolver for oauth2 access tokens. Required when profile.type === 'oauth2'. */
+  resolveOAuthToken?: OAuth2TokenResolver;
   /** Clock override for deterministic JWT iat/exp. ms since epoch. */
   now?: () => number;
 }
@@ -303,6 +321,21 @@ export function applyAuth(opts: ApplyAuthOptions): ResolvedAuth {
       if (profile.header) signOpts.header = profile.header;
       const tok = signJwtHmac(signOpts);
       headers['Authorization'] = `${scheme} ${tok}`;
+      return { headers, query };
+    }
+    case 'oauth2': {
+      if (!opts.resolveOAuthToken) {
+        throw new AuthApplyError(
+          `oauth2 profile '${name}' requires a token resolver`,
+          name,
+        );
+      }
+      const tok = opts.resolveOAuthToken(name, profile);
+      if (!tok || !tok.accessToken) {
+        throw new AuthApplyError(`No access token available for oauth2 profile '${name}'`, name);
+      }
+      const scheme = profile.scheme ?? tok.tokenType ?? 'Bearer';
+      headers['Authorization'] = `${scheme} ${tok.accessToken}`;
       return { headers, query };
     }
     case 'clientCert': {
