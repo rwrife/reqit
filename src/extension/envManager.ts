@@ -124,9 +124,13 @@ export class EnvManager implements vscode.Disposable {
 
   /**
    * Build a resolver closure for the active env, pre-fetching any secrets so
-   * substitution stays synchronous.
+   * substitution stays synchronous. Also returns the resolved secret VALUES
+   * so callers (e.g. "Copy as curl") can redact them from any rendered output.
    */
-  async buildResolver(): Promise<(name: string) => string | undefined> {
+  async buildResolver(): Promise<{
+    resolve: (name: string) => string | undefined;
+    secretValues: string[];
+  }> {
     const env: Env = this.envs[this.activeEnv] ?? {};
     const secrets = new Map<string, string>();
     for (const [varName, value] of Object.entries(env)) {
@@ -136,13 +140,14 @@ export class EnvManager implements vscode.Disposable {
         stored ?? (await this.promptAndStoreSecret(this.activeEnv, varName));
       if (finalValue !== undefined) secrets.set(varName, finalValue);
     }
-    return (name) => {
+    const resolve = (name: string): string | undefined => {
       if (secrets.has(name)) return secrets.get(name);
       const v = env[name];
       if (v === undefined) return undefined;
       if (isSecretMarker(v)) return undefined; // prompt was cancelled
       return String(v);
     };
+    return { resolve, secretValues: [...secrets.values()] };
   }
 
   /** Force-prompt for a secret and overwrite the stored value. */

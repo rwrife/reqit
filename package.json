@@ -64,6 +64,11 @@
         "command": "reqit.setSecret",
         "title": "Reqit: Set Secret",
         "category": "Reqit"
+      },
+      {
+        "command": "reqit.copyAsCurl",
+        "title": "Reqit: Copy as curl",
+        "category": "Reqit"
       }
     ],
     "viewsContainers": {

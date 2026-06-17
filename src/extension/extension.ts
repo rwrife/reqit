@@ -3,6 +3,7 @@ import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
 import { renderResponse } from './responseView.js';
+import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
 import { RequestsTreeProvider } from './requestsTree.js';
 import { EnvManager } from './envManager.js';
@@ -38,6 +39,55 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
+    vscode.commands.registerCommand(
+      'reqit.copyAsCurl',
+      async (arg?: { documentUri: string; requestLineIndex: number; revealSecrets?: boolean }) => {
+        if (!arg) {
+          vscode.window.showWarningMessage('Reqit: use the Copy as curl codelens.');
+          return;
+        }
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(arg.documentUri));
+        const parsed = parseHttpFile(doc.getText());
+        const req = parsed.requests.find((r) => r.requestLineIndex === arg.requestLineIndex);
+        if (!req) {
+          vscode.window.showErrorMessage('Reqit: request not found at codelens position.');
+          return;
+        }
+        const { resolve, secretValues } = await envManager.buildResolver();
+        const substituted = substituteRequest(
+          { url: req.url, headers: req.headers, body: req.body },
+          { resolve },
+        );
+        if (substituted.diagnostics.length > 0) {
+          const names = [...new Set(substituted.diagnostics.map((d) => d.variable))].join(', ');
+          vscode.window.showErrorMessage(
+            `Reqit: unresolved variables (${envManager.active}): ${names}`,
+          );
+          return;
+        }
+        let opts;
+        try {
+          opts = toUndiciRequest({
+            ...req,
+            url: substituted.url,
+            headers: substituted.headers,
+            body: substituted.body,
+          });
+        } catch (err) {
+          vscode.window.showErrorMessage(`Reqit: invalid request — ${(err as Error).message}`);
+          return;
+        }
+        const cmd = requestToCurl(opts, {
+          redact: arg.revealSecrets ? [] : secretValues,
+        });
+        await vscode.env.clipboard.writeText(cmd);
+        vscode.window.showInformationMessage(
+          arg.revealSecrets
+            ? 'Reqit: curl copied (with secrets — handle with care).'
+            : 'Reqit: curl copied (secrets redacted).',
+        );
+      },
+    ),
     vscode.commands.registerCommand('reqit.setSecret', async () => {
       const secrets = envManager.listSecrets();
       if (secrets.length === 0) {
@@ -81,14 +131,24 @@ export function deactivate(): void {
 class HttpCodeLensProvider implements vscode.CodeLensProvider {
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     const { requests } = parseHttpFile(document.getText());
-    return requests.map((r) => {
+    const lenses: vscode.CodeLens[] = [];
+    for (const r of requests) {
       const range = new vscode.Range(r.requestLineIndex, 0, r.requestLineIndex, 0);
-      return new vscode.CodeLens(range, {
-        title: '▶ Send Request',
-        command: 'reqit.sendRequest',
-        arguments: [{ documentUri: document.uri.toString(), requestLineIndex: r.requestLineIndex }],
-      });
-    });
+      const args = [{ documentUri: document.uri.toString(), requestLineIndex: r.requestLineIndex }];
+      lenses.push(
+        new vscode.CodeLens(range, {
+          title: '▶ Send Request',
+          command: 'reqit.sendRequest',
+          arguments: args,
+        }),
+        new vscode.CodeLens(range, {
+          title: '$(clippy) Copy as curl',
+          command: 'reqit.copyAsCurl',
+          arguments: args,
+        }),
+      );
+    }
+    return lenses;
   }
 }
 
@@ -97,7 +157,7 @@ async function runRequest(
   req: ParsedRequest,
   envManager: EnvManager,
 ): Promise<void> {
-  const resolve = await envManager.buildResolver();
+  const { resolve } = await envManager.buildResolver();
   const substituted = substituteRequest(
     { url: req.url, headers: req.headers, body: req.body },
     { resolve },

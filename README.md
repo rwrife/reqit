@@ -41,6 +41,10 @@ Define `.requests/.http-env.json`:
 - Reference vars anywhere with `{{baseUrl}}`, `{{apiKey}}`, etc.
 - Secrets are prompted on first use and stored in VS Code `SecretStorage` — never written to disk in plaintext. Re-prompt with **Reqit: Set Secret**.
 
+### Copy as curl
+
+Every request gets a **Copy as curl** codelens next to **Send Request**. The generated command is POSIX-safe (single-quoted) and any resolved secret values for the active environment are replaced with `***REDACTED***` before it hits the clipboard. Run the `reqit.copyAsCurl` command with `revealSecrets: true` if you explicitly need the unredacted version.
+
 ## Develop
 
 ```
