@@ -216,6 +216,89 @@ describe('applyAuth', () => {
   });
 });
 
+describe('applyAuth oauth2', () => {
+  it('uses the oauth token resolver to set Authorization', () => {
+    const out = applyAuth({
+      name: 'gh',
+      profile: {
+        type: 'oauth2',
+        flow: 'clientCredentials',
+        tokenUrl: 'https://idp/token',
+        clientId: 'c',
+        clientSecret: 's',
+      },
+      resolve: () => undefined,
+      resolveOAuthToken: () => ({ accessToken: 'AT', tokenType: 'Bearer' }),
+    });
+    expect(out.headers['Authorization']).toBe('Bearer AT');
+  });
+  it('throws when no token resolver is provided', () => {
+    expect(() =>
+      applyAuth({
+        name: 'gh',
+        profile: {
+          type: 'oauth2',
+          flow: 'clientCredentials',
+          tokenUrl: 'https://idp/token',
+          clientId: 'c',
+          clientSecret: 's',
+        },
+        resolve: () => undefined,
+      }),
+    ).toThrowError(/token resolver/);
+  });
+  it('throws when resolver returns no token', () => {
+    expect(() =>
+      applyAuth({
+        name: 'gh',
+        profile: {
+          type: 'oauth2',
+          flow: 'clientCredentials',
+          tokenUrl: 'https://idp/token',
+          clientId: 'c',
+          clientSecret: 's',
+        },
+        resolve: () => undefined,
+        resolveOAuthToken: () => undefined,
+      }),
+    ).toThrowError(/No access token/);
+  });
+  it('respects profile.scheme override', () => {
+    const out = applyAuth({
+      name: 'gh',
+      profile: {
+        type: 'oauth2',
+        flow: 'clientCredentials',
+        tokenUrl: 'https://idp/token',
+        clientId: 'c',
+        clientSecret: 's',
+        scheme: 'Token',
+      },
+      resolve: () => undefined,
+      resolveOAuthToken: () => ({ accessToken: 'AT' }),
+    });
+    expect(out.headers['Authorization']).toBe('Token AT');
+  });
+});
+
+describe('listAuthSecretRefs oauth2', () => {
+  it('flags oauth2 clientSecret markers', () => {
+    const r = parseAuthFile(
+      JSON.stringify({
+        idp: {
+          type: 'oauth2',
+          flow: 'clientCredentials',
+          tokenUrl: 'https://idp/token',
+          clientId: 'c',
+          clientSecret: { $secret: true },
+        },
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(listAuthSecretRefs(r.profiles)).toEqual([{ profile: 'idp', field: 'clientSecret' }]);
+  });
+});
+
 describe('mergeQuery', () => {
   it('appends to a URL without existing params', () => {
     expect(mergeQuery('https://x.test/p', { a: '1' })).toBe('https://x.test/p?a=1');
