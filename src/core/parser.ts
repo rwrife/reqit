@@ -50,6 +50,14 @@ export interface ParsedRequest {
    * the last value. Common keys: `auth`, `name`.
    */
   directives: Record<string, string>;
+  /**
+   * Test assertion expressions collected from `# @test <expr>` /
+   * `// @test <expr>` comment lines anywhere in the section (preamble or
+   * trailing). Order is source order. Each entry is a single-line
+   * JavaScript expression to be evaluated against the response context
+   * (see `src/core/assertions.ts`).
+   */
+  tests: string[];
   /** 0-indexed line in source where the request line starts. */
   requestLineIndex: number;
   /** 0-indexed line range [start, endExclusive) covering this request section. */
@@ -141,6 +149,19 @@ export function parseHttpFile(source: string): ParseResult {
     // Find the request line: first non-blank, non-comment line in section.
     // Along the way, collect `@key value` directives from comment lines.
     const directives: Record<string, string> = {};
+    const tests: string[] = [];
+    const collectDirective = (line: string): void => {
+      const stripped = line.trimStart().replace(/^(#|\/\/)\s*/, '');
+      const m = stripped.match(/^@([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.+?))?\s*$/);
+      if (!m) return;
+      const key = m[1];
+      const value = (m[2] ?? '').trim();
+      if (key === 'test') {
+        if (value !== '') tests.push(value);
+        return;
+      }
+      directives[key] = value;
+    };
     let i = section.start;
     while (i < section.end) {
       const l = lines[i];
@@ -149,11 +170,7 @@ export function parseHttpFile(source: string): ParseResult {
         continue;
       }
       if (isCommentLine(l)) {
-        const stripped = l.trimStart().replace(/^(#|\/\/)\s*/, '');
-        const m = stripped.match(/^@([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.+?))?\s*$/);
-        if (m) {
-          directives[m[1]] = (m[2] ?? '').trim();
-        }
+        collectDirective(l);
         i++;
         continue;
       }
@@ -181,6 +198,7 @@ export function parseHttpFile(source: string): ParseResult {
         break;
       }
       if (isCommentLine(l)) {
+        collectDirective(l);
         i++;
         continue;
       }
@@ -195,8 +213,23 @@ export function parseHttpFile(source: string): ParseResult {
     }
 
     // Body is the rest, with leading/trailing blank lines stripped.
+    // `# @test ...` / `// @test ...` lines inside the body region are
+    // pulled out as test assertions and removed from the body so the
+    // request still serializes cleanly.
     const bodyLines: string[] = [];
-    for (; i < section.end; i++) bodyLines.push(lines[i]);
+    for (; i < section.end; i++) {
+      const bl = lines[i];
+      if (isCommentLine(bl)) {
+        const stripped = bl.trimStart().replace(/^(#|\/\/)\s*/, '');
+        const m = stripped.match(/^@test(?:\s+(.+?))?\s*$/);
+        if (m) {
+          const expr = (m[1] ?? '').trim();
+          if (expr !== '') tests.push(expr);
+          continue;
+        }
+      }
+      bodyLines.push(bl);
+    }
     while (bodyLines.length && bodyLines[0].trim() === '') bodyLines.shift();
     while (bodyLines.length && bodyLines[bodyLines.length - 1].trim() === '') bodyLines.pop();
     const body = bodyLines.join('\n');
@@ -207,6 +240,7 @@ export function parseHttpFile(source: string): ParseResult {
       headers,
       body,
       directives,
+      tests,
       requestLineIndex: reqLineIdx,
       startLine: section.start,
       endLine: section.end,
