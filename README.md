@@ -45,6 +45,21 @@ Define `.requests/.http-env.json`:
 
 Every request gets a **Copy as curl** codelens next to **Send Request**. The generated command is POSIX-safe (single-quoted) and any resolved secret values for the active environment are replaced with `***REDACTED***` before it hits the clipboard. Run the `reqit.copyAsCurl` command with `revealSecrets: true` if you explicitly need the unredacted version.
 
+### Test assertions (M6, in progress)
+
+You can attach inline assertions to a request with `# @test <expr>` (or `// @test <expr>`). The expression is evaluated against the response and pass/fail is reported by the runner (M6 — runner UI + CLI ship in follow-up PRs).
+
+Available bindings: `status`, `statusText`, `headers` (lower-cased), `header(name)`, `body`, `text` (alias of `body`), `json` (parsed when content-type is JSON), `durationMs`. Safe globals: `Math`, `Date`, `JSON`, `Number`, `String`, `Boolean`, `Array`, `Object`, `RegExp`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`. Things like `process`, `require`, and `globalThis` are deliberately shadowed.
+
+```http
+# @test status === 200
+# @test json.id != null
+# @test header("content-type").includes("json")
+# @test durationMs < 1000
+GET https://example.com/api/me
+```
+
+
 ## Develop
 
 ```
