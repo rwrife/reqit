@@ -1,0 +1,28 @@
+# Changelog
+
+All notable changes to **Reqit** are documented here.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Marketplace metadata: `keywords`, `galleryBanner`, `qna`, `pricing`, `homepage`, `bugs`, `author`, and `capabilities` declarations in `package.json`.
+- `CHANGELOG.md` (this file) — VS Code Marketplace surfaces it on the extension page.
+
+### Notes
+
+- M7 marketplace release (icon, screenshots, publisher setup, v0.1.0 tag, marketplace publish) tracked in [#7](https://github.com/rwrife/reqit/issues/7).
+
+## [0.0.1] - Pre-release
+
+Initial scaffold. See `PLAN.md` for the milestone roadmap.
+
+- M1: TypeScript + esbuild scaffold, `.http` parser, `Reqit: Init Workspace`, `Send Request` codelens, undici-backed request runner with webview response viewer.
+- M2: `.requests/.http-env.json` environments, `{{var}}` substitution (URL + headers + body), built-ins (`$guid`, `$timestamp`, `$datetime`, `$randomInt`), `SecretStorage`-backed secrets.
+- M3: Auth core (`@auth` directive, schema, Basic / Bearer / API key / JWT HS256-512).
+- M4: OAuth2 core (schema, PKCE, builders, token parsing).
+- M5 (partial): "Copy as curl" codelens with secret redaction.
+- M6 (partial): `@test` assertion parsing + pure evaluator.
+- MIT LICENSE.

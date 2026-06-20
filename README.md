@@ -1,5 +1,9 @@
 # Reqit
 
+[![CI](https://github.com/rwrife/reqit/actions/workflows/ci.yml/badge.svg)](https://github.com/rwrife/reqit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85-007ACC?logo=visualstudiocode)](https://code.visualstudio.com/)
+
 **Test it before you req it!**
 
 A VS Code extension for testing HTTP services from inside your editor — with first-class auth (mTLS, JWT, OAuth2).
@@ -72,6 +76,11 @@ npm run test:unit   # vitest (pure parser tests)
 
 Press `F5` in VS Code to launch the Extension Development Host.
 
+## Changelog
+
+See [`CHANGELOG.md`](./CHANGELOG.md).
+
 ## License
 
-MIT
+MIT — see [`LICENSE`](./LICENSE).
+
