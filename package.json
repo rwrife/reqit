@@ -6,6 +6,11 @@
   "publisher": "rwrife",
   "private": true,
   "license": "MIT",
+  "author": "rwrife",
+  "homepage": "https://github.com/rwrife/reqit#readme",
+  "bugs": {
+    "url": "https://github.com/rwrife/reqit/issues"
+  },
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=20"
@@ -15,6 +20,31 @@
     "url": "https://github.com/rwrife/reqit.git"
   },
   "categories": ["Other", "Testing"],
+  "keywords": [
+    "http",
+    "rest",
+    "api",
+    "mtls",
+    "client certificate",
+    "jwt",
+    "oauth2",
+    "rest client",
+    ".http",
+    "testing"
+  ],
+  "galleryBanner": {
+    "color": "#0B1220",
+    "theme": "dark"
+  },
+  "qna": "https://github.com/rwrife/reqit/issues",
+  "pricing": "Free",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Reqit reads .http files and may load client-cert/key paths from .http-auth.json; only enable in trusted workspaces."
+    },
+    "virtualWorkspaces": false
+  },
   "activationEvents": [
     "onLanguage:http",
     "onCommand:reqit.initWorkspace",
