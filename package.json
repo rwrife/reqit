@@ -20,6 +20,7 @@
     "url": "https://github.com/rwrife/reqit.git"
   },
   "categories": ["Other", "Testing"],
+  "icon": "media/icon.png",
   "keywords": [
     "http",
     "rest",
@@ -136,7 +137,8 @@
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
-    "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\"",
+    "icon": "node ./scripts/generate-icon.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
