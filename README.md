@@ -19,6 +19,82 @@ The existing landscape of VS Code REST extensions handles `GET /api/users` great
 
 Reqit fixes that.
 
+## Features
+
+- **`.http` request files** — plain-text, version-controllable, REST Client–compatible syntax (`### request separators`, method/URL line, headers, blank line, body).
+- **Environments + variables** — `.requests/.http-env.json` with per-environment values, `{{var}}` substitution everywhere, and built-ins (`{{$guid}}`, `{{$timestamp}}`, `{{$randomInt min max}}`, `{{$datetime iso|rfc1123}}`).
+- **Secrets done right** — per-environment values flagged `{ "$secret": true }` are stored in VS Code `SecretStorage`. Never written to disk in plaintext, never logged.
+- **First-class auth** — `@auth <name>` directive resolves a profile from `.requests/.http-auth.json`:
+  - `basic`, `bearer`, `apiKey` (header or query)
+  - `jwt` — paste-in OR generated from claims (HS256/HS384/HS512)
+  - `clientCert` (mTLS) — PEM (`cert` + `key` + optional `ca`) or PFX with passphrase
+  - `oauth2` — `clientCredentials` and `authorizationCode` w/ PKCE; tokens cached in `SecretStorage`
+- **Send Request codelens** — one-click execution backed by [`undici`](https://github.com/nodejs/undici); response opens in a side panel.
+- **Copy as curl** — POSIX-safe, secrets redacted by default. Opt in to `revealSecrets: true` when you really need it.
+- **Inline assertions** — `# @test status === 200`, `# @test json.id != null`, etc. (M6, runner UI shipping in follow-up).
+- **Local-only, zero telemetry** — no first-party server, no "check for updates" pings. CI enforces a no-telemetry import scan on every build.
+
+## Install
+
+Reqit isn't published to the Marketplace yet (M7 in progress — see [#7](https://github.com/rwrife/reqit/issues/7)). To try it now:
+
+```bash
+git clone https://github.com/rwrife/reqit.git
+cd reqit
+npm install && npm run build
+```
+
+Then press `F5` in VS Code to launch an Extension Development Host with Reqit loaded, or run `npx vsce package` to build a `.vsix` you can `code --install-extension reqit-0.0.1.vsix`.
+
+## Quick start
+
+1. Open a workspace and run **Reqit: Init Workspace** — scaffolds `.requests/` with a sample `hello.http` and an empty `.http-env.json`.
+2. Open the sample file. Click **Send Request** above any request.
+3. Pick an environment from the status-bar item.
+
+## Auth examples
+
+`.requests/.http-auth.json`:
+
+```json
+{
+  "prod-mtls": {
+    "type": "clientCert",
+    "cert": "./certs/client.pem",
+    "key": "./certs/client.key",
+    "ca": "./certs/ca.pem"
+  },
+  "signed-jwt": {
+    "type": "jwt",
+    "alg": "HS256",
+    "secret": { "$secret": true },
+    "claims": { "sub": "svc-account", "aud": "https://api.example.com" },
+    "ttlSeconds": 300
+  },
+  "github": {
+    "type": "oauth2",
+    "flow": "authorizationCode",
+    "clientId": "...",
+    "authorizationUrl": "https://github.com/login/oauth/authorize",
+    "tokenUrl": "https://github.com/login/oauth/access_token",
+    "scopes": ["repo", "read:user"]
+  }
+}
+```
+
+```http
+# @auth prod-mtls
+GET https://api.example.com/me
+
+###
+
+# @auth signed-jwt
+POST https://api.example.com/events
+Content-Type: application/json
+
+{ "kind": "ping" }
+```
+
 ## Status
 
 🚧 Pre-alpha. Following the plan in [`PLAN.md`](./PLAN.md).
