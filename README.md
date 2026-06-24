@@ -32,6 +32,7 @@ Reqit fixes that.
 - **Send Request codelens** — one-click execution backed by [`undici`](https://github.com/nodejs/undici); response opens in a side panel.
 - **Copy as curl** — POSIX-safe, secrets redacted by default. Opt in to `revealSecrets: true` when you really need it.
 - **Inline assertions** — `# @test status === 200`, `# @test json.id != null`, etc. (M6, runner UI shipping in follow-up).
+- **GraphQL** — mark a request with `# @graphql` or `X-Request-Kind: graphql` and write the query naturally; Reqit serializes `{ query, variables, operationName }` and pretty-prints `data` / `errors` separately. See `### GraphQL` below.
 - **Local-only, zero telemetry** — no first-party server, no "check for updates" pings. CI enforces a no-telemetry import scan on every build.
 
 ## Install
@@ -138,6 +139,24 @@ Available bindings: `status`, `statusText`, `headers` (lower-cased), `header(nam
 # @test durationMs < 1000
 GET https://example.com/api/me
 ```
+
+### GraphQL
+
+Mark a request as GraphQL with either a `# @graphql` directive **or** an `X-Request-Kind: graphql` header. The body is the GraphQL document, optionally followed by a blank line and a JSON variables block:
+
+```http
+### Get user
+POST https://api.example.com/graphql
+X-Request-Kind: graphql
+
+query GetUser($id: ID!) {
+  user(id: $id) { id name email }
+}
+
+{ "id": "{{userId}}" }
+```
+
+Reqit serializes the outgoing body as `{ query, variables, operationName? }` (defaulting variables to `{}`), auto-detects `operationName` from the first named `query|mutation|subscription`, strips the `X-Request-Kind` marker, sets `Content-Type: application/json` if you didn't, and runs `{{var}}` substitution across both the query and the variables block. The response viewer pretty-prints `data` and `errors` separately when the response looks like GraphQL.
 
 
 ## Develop

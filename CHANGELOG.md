@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- GraphQL request support in `.http` files: trigger with `# @graphql` or `X-Request-Kind: graphql`; auto-builds `{ query, variables, operationName }`, runs `{{var}}` substitution across both the document and the variables JSON, and pretty-prints `data` / `errors` separately in the response viewer ([#23](https://github.com/rwrife/reqit/issues/23)).
 - README: Features / Install / Quick start / Auth examples sections — marketplace-prep polish for [#7](https://github.com/rwrife/reqit/issues/7).
 - Marketplace metadata: `keywords`, `galleryBanner`, `qna`, `pricing`, `homepage`, `bugs`, `author`, and `capabilities` declarations in `package.json`.
 - `CHANGELOG.md` (this file) — VS Code Marketplace surfaces it on the extension page.
