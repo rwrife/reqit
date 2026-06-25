@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { tryParseGraphQLResponse } from '../core/graphql.js';
 import type { UndiciRequestOptions } from '../core/request.js';
 
 export interface ResponseRender {
@@ -54,17 +55,32 @@ function html(r: ResponseRender): string {
   const ct = r.headers['content-type'] ?? r.headers['Content-Type'];
   const body = prettyBody(r.body, ct);
   const statusLine = r.status === 0 ? 'NETWORK ERROR' : `HTTP ${r.status}`;
+  const gql = tryParseGraphQLResponse(r.body, ct);
+  const gqlBlock = gql
+    ? `
+  <h2>GraphQL</h2>
+  ${
+    'data' in gql
+      ? `<h3>data</h3><pre>${escape(JSON.stringify(gql.data, null, 2))}</pre>`
+      : ''
+  }${
+    'errors' in gql
+      ? `<h3>errors</h3><pre>${escape(JSON.stringify(gql.errors, null, 2))}</pre>`
+      : ''
+  }`
+    : '';
   return `<!doctype html>
 <html><head><meta charset="utf-8"><style>
   body { font-family: var(--vscode-editor-font-family, monospace); padding: 12px; }
   h2 { margin: 0 0 4px 0; font-size: 14px; }
+  h3 { margin: 8px 0 4px 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
   pre { white-space: pre-wrap; word-break: break-word; background: var(--vscode-textBlockQuote-background); padding: 8px; border-radius: 4px; }
   .meta { color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 8px; }
 </style></head><body>
   <h2>${escape(r.request.method)} ${escape(r.request.url)}</h2>
   <div class="meta">${escape(statusLine)} · ${r.elapsedMs}ms · ${r.body.length} bytes</div>
   <h2>Headers</h2>
-  <pre>${escape(headerLines)}</pre>
+  <pre>${escape(headerLines)}</pre>${gqlBlock}
   <h2>Body</h2>
   <pre>${escape(body)}</pre>
 </body></html>`;
