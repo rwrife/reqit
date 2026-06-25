@@ -5,6 +5,7 @@ import { substituteRequest } from '../core/substitute.js';
 import { renderResponse } from './responseView.js';
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
+import { importFromCurlCommand } from './importCurl.js';
 import { RequestsTreeProvider } from './requestsTree.js';
 import { EnvManager } from './envManager.js';
 
@@ -35,6 +36,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('reqit.initWorkspace', async () => {
       await initWorkspace();
+      treeProvider.refresh();
+    }),
+    vscode.commands.registerCommand('reqit.importFromCurl', async () => {
+      await importFromCurlCommand();
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
