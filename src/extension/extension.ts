@@ -6,6 +6,7 @@ import { renderResponse } from './responseView.js';
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
 import { importFromCurlCommand } from './importCurl.js';
+import { importFromPostmanCommand } from './importPostman.js';
 import { RequestsTreeProvider } from './requestsTree.js';
 import { EnvManager } from './envManager.js';
 
@@ -40,6 +41,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('reqit.importFromCurl', async () => {
       await importFromCurlCommand();
+      treeProvider.refresh();
+    }),
+    vscode.commands.registerCommand('reqit.importFromPostman', async () => {
+      await importFromPostmanCommand();
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),

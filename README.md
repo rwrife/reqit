@@ -101,7 +101,8 @@ Content-Type: application/json
 Reqit can convert requests from formats you've already got lying around.
 
 - **`Reqit: Import from cURL`** — paste any `curl ...` command (multi-line with `\` continuations is fine). Reqit writes a new file under `.requests/` with the URL, method, headers and body filled in. `-u` becomes a Basic `Authorization` header, `--cert` / `--key` become a `# @auth clientCert (...)` directive so you know to wire up an mTLS profile in `.http-auth.json`.
-- *Postman v2.1 collections and OpenAPI 3.x — coming soon (tracked in [#25](https://github.com/rwrife/reqit/issues/25)).*
+- **`Reqit: Import Postman Collection`** — point at a Postman v2.1 `.json` export. Reqit writes one `.http` file per top-level folder under `.requests/` (nested folders are flattened into prefixed request names like `### Admin / Users / invite`). Supported bodies: `raw` (Content-Type inferred from `options.raw.language`), `urlencoded`, `graphql`. Supported auth: basic, bearer, apikey (header), oauth2 (token attached if present). Multipart/file bodies and `apikey` in query are surfaced as `# unsupported:` notes so you can finish them by hand. Collection-level variables are offered for merge into `.http-env.json` under an env name of your choice; `{{var}}` tokens are preserved verbatim since reqit uses the same syntax.
+- *OpenAPI 3.x — coming soon (tracked in [#25](https://github.com/rwrife/reqit/issues/25)).*
 
 Imports never silently overwrite an existing file — you'll be asked to confirm.
 
