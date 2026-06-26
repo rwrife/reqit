@@ -96,6 +96,15 @@ Content-Type: application/json
 { "kind": "ping" }
 ```
 
+## Importing from other tools
+
+Reqit can convert requests from formats you've already got lying around.
+
+- **`Reqit: Import from cURL`** — paste any `curl ...` command (multi-line with `\` continuations is fine). Reqit writes a new file under `.requests/` with the URL, method, headers and body filled in. `-u` becomes a Basic `Authorization` header, `--cert` / `--key` become a `# @auth clientCert (...)` directive so you know to wire up an mTLS profile in `.http-auth.json`.
+- *Postman v2.1 collections and OpenAPI 3.x — coming soon (tracked in [#25](https://github.com/rwrife/reqit/issues/25)).*
+
+Imports never silently overwrite an existing file — you'll be asked to confirm.
+
 ## Status
 
 🚧 Pre-alpha. Following the plan in [`PLAN.md`](./PLAN.md).

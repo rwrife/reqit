@@ -49,6 +49,7 @@
   "activationEvents": [
     "onLanguage:http",
     "onCommand:reqit.initWorkspace",
+    "onCommand:reqit.importFromCurl",
     "workspaceContains:.requests",
     "workspaceContains:.requests/**/*.http"
   ],
@@ -73,6 +74,11 @@
       {
         "command": "reqit.initWorkspace",
         "title": "Reqit: Init Workspace",
+        "category": "Reqit"
+      },
+      {
+        "command": "reqit.importFromCurl",
+        "title": "Reqit: Import from cURL",
         "category": "Reqit"
       },
       {
