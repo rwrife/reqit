@@ -82,6 +82,11 @@
         "category": "Reqit"
       },
       {
+        "command": "reqit.importFromPostman",
+        "title": "Reqit: Import Postman Collection",
+        "category": "Reqit"
+      },
+      {
         "command": "reqit.sendRequest",
         "title": "Reqit: Send Request",
         "category": "Reqit"
