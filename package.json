@@ -19,7 +19,10 @@
     "type": "git",
     "url": "https://github.com/rwrife/reqit.git"
   },
-  "categories": ["Other", "Testing"],
+  "categories": [
+    "Other",
+    "Testing"
+  ],
   "icon": "media/icon.png",
   "keywords": [
     "http",
@@ -50,6 +53,7 @@
     "onLanguage:http",
     "onCommand:reqit.initWorkspace",
     "onCommand:reqit.importFromCurl",
+    "onCommand:reqit.importFromOpenApi",
     "workspaceContains:.requests",
     "workspaceContains:.requests/**/*.http"
   ],
@@ -58,8 +62,14 @@
     "languages": [
       {
         "id": "http",
-        "aliases": ["HTTP", "http"],
-        "extensions": [".http", ".rest"],
+        "aliases": [
+          "HTTP",
+          "http"
+        ],
+        "extensions": [
+          ".http",
+          ".rest"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -84,6 +94,11 @@
       {
         "command": "reqit.importFromPostman",
         "title": "Reqit: Import Postman Collection",
+        "category": "Reqit"
+      },
+      {
+        "command": "reqit.importFromOpenApi",
+        "title": "Reqit: Import OpenAPI",
         "category": "Reqit"
       },
       {
@@ -164,6 +179,7 @@
   },
   "dependencies": {
     "undici": "^6.19.0",
+    "yaml": "^2.9.0",
     "zod": "^3.23.0"
   }
 }
