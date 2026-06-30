@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
+import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js';
 
 /**
  * Tree view backing "Reqit Requests".
@@ -62,7 +63,7 @@ async function listDir(uri: vscode.Uri): Promise<RequestsNode[]> {
     const child = vscode.Uri.joinPath(uri, name);
     if (type & vscode.FileType.Directory) {
       out.push(new FolderNode(name, child));
-    } else if ((type & vscode.FileType.File) !== 0 && name.toLowerCase().endsWith('.http')) {
+    } else if ((type & vscode.FileType.File) !== 0 && /\.(http|grpc)$/i.test(name)) {
       out.push(new FileNode(name, child));
     }
   }
@@ -82,11 +83,20 @@ async function parseFileRequests(uri: vscode.Uri): Promise<RequestsNode[]> {
     return [];
   }
   const text = new TextDecoder().decode(bytes);
+  if (/\.grpc$/i.test(uri.path)) {
+    const { requests } = parseGrpcFile(text);
+    return requests.map((r, i) => new GrpcRequestNode(uri, r, i));
+  }
   const { requests } = parseHttpFile(text);
   return requests.map((r, i) => new RequestNode(uri, r, i));
 }
 
-export type RequestsNode = FolderNode | FileNode | RequestNode | MessageNode;
+export type RequestsNode =
+  | FolderNode
+  | FileNode
+  | RequestNode
+  | GrpcRequestNode
+  | MessageNode;
 
 class FolderNode {
   readonly kind = 'folder' as const;
@@ -162,6 +172,33 @@ class MessageNode {
   toTreeItem(): vscode.TreeItem {
     const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.None);
     item.contextValue = 'reqit.message';
+    return item;
+  }
+}
+
+class GrpcRequestNode {
+  readonly kind = 'grpc-request' as const;
+  readonly label: string;
+  constructor(
+    readonly uri: vscode.Uri,
+    readonly request: ParsedGrpcRequestWithRange,
+    readonly index: number,
+  ) {
+    const t = request.target;
+    this.label = request.name ?? `${t.host}/${t.service}/${t.method}`;
+  }
+  toTreeItem(): vscode.TreeItem {
+    const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.None);
+    item.description = 'GRPC';
+    const t = this.request.target;
+    item.tooltip = `GRPC ${t.host}:${t.port}/${t.service}/${t.method}`;
+    item.iconPath = new vscode.ThemeIcon('symbol-event');
+    item.contextValue = 'reqit.grpcRequest';
+    item.command = {
+      command: 'vscode.open',
+      title: 'Open',
+      arguments: [this.uri],
+    };
     return item;
   }
 }

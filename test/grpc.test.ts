@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseGrpcBlock, parseGrpcTarget } from '../src/core/grpc.js';
+import { parseGrpcBlock, parseGrpcFile, parseGrpcTarget } from '../src/core/grpc.js';
 
 describe('parseGrpcTarget', () => {
   it('parses host:port/Service/Method with default TLS', () => {
@@ -115,5 +115,79 @@ x-correlation-id: abc-123
     );
     expect(parsed.authProfile).toBe('p1');
     expect(parsed.body).toEqual({ a: 1 });
+  });
+});
+
+describe('parseGrpcFile', () => {
+  it('parses an empty file with no requests', () => {
+    const { requests, diagnostics } = parseGrpcFile('');
+    expect(requests).toEqual([]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it('parses a single implicit block (no ### separator)', () => {
+    const src = `GRPC localhost:50051/echo.v1.Echo/Say\n\n{"msg":"hi"}`;
+    const { requests, diagnostics } = parseGrpcFile(src);
+    expect(diagnostics).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].target.method).toBe('Say');
+    expect(requests[0].body).toEqual({ msg: 'hi' });
+    expect(requests[0].requestLineIndex).toBe(0);
+  });
+
+  it('parses multiple blocks separated by ###', () => {
+    const src = [
+      '### list',
+      'GRPC localhost:50051/users.UserService/ListUsers',
+      '',
+      '{"page_size": 10}',
+      '',
+      '### get',
+      'GRPC localhost:50051/users.UserService/GetUser',
+      '# @auth my-prof',
+      '',
+      '{"id": 1}',
+    ].join('\n');
+    const { requests, diagnostics } = parseGrpcFile(src);
+    expect(diagnostics).toEqual([]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0].name).toBe('list');
+    expect(requests[0].target.method).toBe('ListUsers');
+    expect(requests[1].name).toBe('get');
+    expect(requests[1].authProfile).toBe('my-prof');
+    expect(requests[1].target.method).toBe('GetUser');
+    expect(requests[0].requestLineIndex).toBe(1);
+    expect(requests[1].requestLineIndex).toBe(6);
+  });
+
+  it('skips empty blocks silently', () => {
+    const src = '### empty\n\n### real\nGRPC h:1/pkg.S/M\n';
+    const { requests, diagnostics } = parseGrpcFile(src);
+    expect(diagnostics).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].name).toBe('real');
+  });
+
+  it('collects diagnostics for malformed blocks and keeps valid ones', () => {
+    const src = [
+      '### bad',
+      'GET https://example.com/oops',
+      '',
+      '### good',
+      'GRPC h:1/pkg.S/M',
+    ].join('\n');
+    const { requests, diagnostics } = parseGrpcFile(src);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].name).toBe('good');
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].message).toMatch(/must start with `GRPC/);
+  });
+
+  it('normalises CRLF line endings', () => {
+    const src = '### one\r\nGRPC h:1/pkg.S/M\r\n';
+    const { requests, diagnostics } = parseGrpcFile(src);
+    expect(diagnostics).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].target.service).toBe('pkg.S');
   });
 });

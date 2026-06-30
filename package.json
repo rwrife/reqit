@@ -51,11 +51,13 @@
   },
   "activationEvents": [
     "onLanguage:http",
+    "onLanguage:grpc",
     "onCommand:reqit.initWorkspace",
     "onCommand:reqit.importFromCurl",
     "onCommand:reqit.importFromOpenApi",
     "workspaceContains:.requests",
-    "workspaceContains:.requests/**/*.http"
+    "workspaceContains:.requests/**/*.http",
+    "workspaceContains:.requests/**/*.grpc"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -71,6 +73,17 @@
           ".rest"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "grpc",
+        "aliases": [
+          "gRPC",
+          "grpc"
+        ],
+        "extensions": [
+          ".grpc"
+        ],
+        "configuration": "./language-configuration.grpc.json"
       }
     ],
     "grammars": [
@@ -78,6 +91,11 @@
         "language": "http",
         "scopeName": "source.http",
         "path": "./syntaxes/http.tmLanguage.json"
+      },
+      {
+        "language": "grpc",
+        "scopeName": "source.grpc",
+        "path": "./syntaxes/grpc.tmLanguage.json"
       }
     ],
     "commands": [
