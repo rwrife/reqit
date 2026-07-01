@@ -238,3 +238,100 @@ export function parseGrpcBlock(block: string): ParsedGrpcRequest {
 
   return { target, authProfile, body, metadata };
 }
+
+/** Result of parsing a multi-block `.grpc` file. */
+export interface ParsedGrpcFile {
+  requests: ParsedGrpcRequest[];
+  diagnostics: GrpcDiagnostic[];
+}
+
+export interface GrpcDiagnostic {
+  /** 0-indexed line where the offending block began. */
+  line: number;
+  message: string;
+}
+
+export interface ParsedGrpcRequestWithRange extends ParsedGrpcRequest {
+  /** 0-indexed line where this block's `GRPC` request line lives in the source file. */
+  requestLineIndex: number;
+  /** 0-indexed line range [start, endExclusive) covering this block in the source file. */
+  startLine: number;
+  endLine: number;
+  /** Optional name from the preceding `### <name>` separator. */
+  name?: string;
+}
+
+export interface ParsedGrpcFileWithRanges {
+  requests: ParsedGrpcRequestWithRange[];
+  diagnostics: GrpcDiagnostic[];
+}
+
+/**
+ * Parse a `.grpc` file containing zero or more request blocks separated by
+ * `###` lines (same convention as `.http` files). Malformed blocks emit a
+ * diagnostic and are skipped; valid blocks are still returned.
+ */
+export function parseGrpcFile(source: string): ParsedGrpcFileWithRanges {
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const sections = splitGrpcSections(lines);
+  const requests: ParsedGrpcRequestWithRange[] = [];
+  const diagnostics: GrpcDiagnostic[] = [];
+
+  for (const section of sections) {
+    const slice = lines.slice(section.start, section.end).join('\n');
+    if (slice.trim() === '') continue;
+    try {
+      const parsed = parseGrpcBlock(slice);
+      // Find the GRPC line index within the section for codelens placement.
+      let reqIdx = section.start;
+      for (let i = section.start; i < section.end; i++) {
+        if (/^\s*GRPC\s+/i.test(lines[i])) {
+          reqIdx = i;
+          break;
+        }
+      }
+      const entry: ParsedGrpcRequestWithRange = {
+        ...parsed,
+        requestLineIndex: reqIdx,
+        startLine: section.start,
+        endLine: section.end,
+      };
+      if (section.name !== undefined) entry.name = section.name;
+      requests.push(entry);
+    } catch (err) {
+      diagnostics.push({
+        line: section.start,
+        message: (err as Error).message,
+      });
+    }
+  }
+
+  return { requests, diagnostics };
+}
+
+function splitGrpcSections(
+  lines: string[],
+): Array<{ start: number; end: number; name?: string }> {
+  const sections: Array<{ start: number; end: number; name?: string }> = [];
+  let current: { start: number; end: number; name?: string } | null = null;
+  const isSep = (l: string): boolean => /^###/.test(l);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isSep(line)) {
+      if (current) {
+        current.end = i;
+        sections.push(current);
+      }
+      const name = line.replace(/^###/, '').trim() || undefined;
+      current =
+        name === undefined
+          ? { start: i + 1, end: lines.length }
+          : { start: i + 1, end: lines.length, name };
+    } else if (!current) {
+      current = { start: 0, end: lines.length };
+    }
+  }
+  if (current) sections.push(current);
+  return sections;
+}

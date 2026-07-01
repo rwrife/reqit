@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "gRPC",
+  "scopeName": "source.grpc",
+  "patterns": [
+    { "include": "#separator" },
+    { "include": "#directive" },
+    { "include": "#comment" },
+    { "include": "#requestLine" },
+    { "include": "#header" },
+    { "include": "#body" }
+  ],
+  "repository": {
+    "separator": {
+      "match": "^###.*$",
+      "name": "comment.line.separator.grpc"
+    },
+    "directive": {
+      "match": "^\\s*(?:#|//)\\s*(@[A-Za-z][A-Za-z0-9_-]*)(.*)$",
+      "captures": {
+        "1": { "name": "keyword.control.directive.grpc" },
+        "2": { "name": "string.unquoted.directive-value.grpc" }
+      }
+    },
+    "comment": {
+      "match": "^\\s*(#|//).*$",
+      "name": "comment.line.grpc"
+    },
+    "requestLine": {
+      "match": "^(GRPC)\\s+(\\S+)\\s*$",
+      "captures": {
+        "1": { "name": "keyword.control.grpc" },
+        "2": { "name": "string.unquoted.target.grpc" }
+      }
+    },
+    "header": {
+      "match": "^([A-Za-z0-9_-]+)\\s*:\\s*(.*)$",
+      "captures": {
+        "1": { "name": "support.type.header.grpc" },
+        "2": { "name": "string.unquoted.header-value.grpc" }
+      }
+    },
+    "body": {
+      "begin": "^\\{",
+      "end": "^\\}",
+      "name": "source.json.embedded.grpc",
+      "patterns": [{ "include": "source.json" }]
+    }
+  }
+}
