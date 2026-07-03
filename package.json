@@ -125,6 +125,11 @@
         "category": "Reqit"
       },
       {
+        "command": "reqit.sendGrpcRequest",
+        "title": "Reqit: Send gRPC Request",
+        "category": "Reqit"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",

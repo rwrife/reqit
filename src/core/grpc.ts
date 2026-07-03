@@ -335,3 +335,59 @@ function splitGrpcSections(
   if (current) sections.push(current);
   return sections;
 }
+
+/**
+ * A single codelens spec derived from a parsed `.grpc` file.
+ *
+ * The extension layer turns each spec into a `vscode.CodeLens` — this
+ * intermediate shape stays VS Code-free so it's unit-testable and can be
+ * reused by other surfaces (e.g. a CLI listing) later on.
+ */
+export interface GrpcCodeLensSpec {
+  /** 0-indexed line where the codelens should anchor (the `GRPC` request line). */
+  line: number;
+  /** Lens button label, including a leading Codicon-compatible glyph or `▶`. */
+  title: string;
+  /** Command id the lens should invoke. */
+  command: string;
+  /** Argument payload passed to the command. */
+  arg: GrpcSendArg;
+}
+
+/**
+ * Argument payload for `reqit.sendGrpcRequest`. Kept flat + string-only so it
+ * survives serialization across the VS Code extension host / command bus.
+ */
+export interface GrpcSendArg {
+  /** URI of the document the request lives in. */
+  documentUri: string;
+  /** 0-indexed line of the `GRPC` request line — used to re-parse and dispatch. */
+  requestLineIndex: number;
+}
+
+/**
+ * Turn a parsed `.grpc` file into an ordered list of codelens specs — one
+ * "Send Request" lens per successfully-parsed block. Blocks that only
+ * produced diagnostics are skipped (they have no anchor line to attach to).
+ *
+ * The `documentUri` is opaque to this function; callers pass whatever
+ * identifier their command layer expects.
+ */
+export function buildGrpcCodeLenses(
+  parsed: ParsedGrpcFileWithRanges,
+  documentUri: string,
+): GrpcCodeLensSpec[] {
+  const specs: GrpcCodeLensSpec[] = [];
+  for (const req of parsed.requests) {
+    specs.push({
+      line: req.requestLineIndex,
+      title: '▶ Send Request',
+      command: 'reqit.sendGrpcRequest',
+      arg: {
+        documentUri,
+        requestLineIndex: req.requestLineIndex,
+      },
+    });
+  }
+  return specs;
+}

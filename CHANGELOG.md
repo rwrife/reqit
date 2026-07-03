@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- gRPC codelens + preview: `.grpc` files now get a `▶ Send Request` codelens (and the Requests tree entries invoke it) that opens the response panel with the parsed target, auth profile, metadata, and body. Live wire dispatch (server-reflection + mTLS) is still tracked under [#24](https://github.com/rwrife/reqit/issues/24); this slice unblocks the UX so users can validate `.grpc` files end-to-end today.
 - GraphQL request support in `.http` files: trigger with `# @graphql` or `X-Request-Kind: graphql`; auto-builds `{ query, variables, operationName }`, runs `{{var}}` substitution across both the document and the variables JSON, and pretty-prints `data` / `errors` separately in the response viewer ([#23](https://github.com/rwrife/reqit/issues/23)).
 - README: Features / Install / Quick start / Auth examples sections — marketplace-prep polish for [#7](https://github.com/rwrife/reqit/issues/7).
 - Marketplace metadata: `keywords`, `galleryBanner`, `qna`, `pricing`, `homepage`, `bugs`, `author`, and `capabilities` declarations in `package.json`.
