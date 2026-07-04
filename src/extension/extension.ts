@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
-import { renderResponse } from './responseView.js';
+import { renderResponse, renderGrpcInfo } from './responseView.js';
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
 import { importFromCurlCommand } from './importCurl.js';
@@ -10,6 +10,7 @@ import { importFromPostmanCommand } from './importPostman.js';
 import { importFromOpenApiCommand } from './importOpenapi.js';
 import { RequestsTreeProvider } from './requestsTree.js';
 import { EnvManager } from './envManager.js';
+import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
@@ -27,7 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (folder) {
     const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(folder, '.requests/**/*.http'),
+      new vscode.RelativePattern(folder, '.requests/**/*.{http,grpc}'),
     );
     watcher.onDidCreate(() => treeProvider.refresh());
     watcher.onDidChange(() => treeProvider.refresh());
@@ -135,7 +136,33 @@ export function activate(context: vscode.ExtensionContext): void {
         await runRequest(context, req, envManager);
       },
     ),
+    vscode.commands.registerCommand(
+      'reqit.sendGrpcRequest',
+      async (arg?: { documentUri: string; requestLineIndex: number }) => {
+        if (!arg) {
+          vscode.window.showWarningMessage('Reqit: use the Send Request codelens on a .grpc file.');
+          return;
+        }
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(arg.documentUri));
+        const { requests, diagnostics } = parseGrpcFile(doc.getText());
+        const req = requests.find((r) => r.requestLineIndex === arg.requestLineIndex);
+        if (!req) {
+          const diag = diagnostics.find((d) => d.line <= arg.requestLineIndex);
+          const detail = diag ? ` (${diag.message})` : '';
+          vscode.window.showErrorMessage(
+            `Reqit: gRPC request not found at codelens position${detail}.`,
+          );
+          return;
+        }
+        // Wire runner (server-reflection + mTLS via @grpc/grpc-js) ships in a
+        // follow-up PR under issue #24. Until then we render the parsed
+        // request into the response panel so users can verify the parser did
+        // the right thing and copy things by hand if they need to.
+        renderGrpcInfo(context, { request: req });
+      },
+    ),
     vscode.languages.registerCodeLensProvider({ language: 'http' }, new HttpCodeLensProvider()),
+    vscode.languages.registerCodeLensProvider({ language: 'grpc' }, new GrpcCodeLensProvider()),
   );
 }
 
@@ -164,6 +191,21 @@ class HttpCodeLensProvider implements vscode.CodeLensProvider {
       );
     }
     return lenses;
+  }
+}
+
+class GrpcCodeLensProvider implements vscode.CodeLensProvider {
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    const parsed = parseGrpcFile(document.getText());
+    const specs = buildGrpcCodeLenses(parsed, document.uri.toString());
+    return specs.map(
+      (s) =>
+        new vscode.CodeLens(new vscode.Range(s.line, 0, s.line, 0), {
+          title: s.title,
+          command: s.command,
+          arguments: [s.arg],
+        }),
+    );
   }
 }
 

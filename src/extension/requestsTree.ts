@@ -195,9 +195,14 @@ class GrpcRequestNode {
     item.iconPath = new vscode.ThemeIcon('symbol-event');
     item.contextValue = 'reqit.grpcRequest';
     item.command = {
-      command: 'vscode.open',
-      title: 'Open',
-      arguments: [this.uri],
+      command: 'reqit.sendGrpcRequest',
+      title: '▶ Send Request',
+      arguments: [
+        {
+          documentUri: this.uri.toString(),
+          requestLineIndex: this.request.requestLineIndex,
+        },
+      ],
     };
     return item;
   }
