@@ -187,7 +187,8 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
     "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\"",
-    "icon": "node ./scripts/generate-icon.mjs"
+    "icon": "node ./scripts/generate-icon.mjs",
+    "preflight": "node ./scripts/preflight-release.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
