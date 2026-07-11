@@ -150,6 +150,22 @@ Available bindings: `status`, `statusText`, `headers` (lower-cased), `header(nam
 GET https://example.com/api/me
 ```
 
+### Schema validation (in progress)
+
+Attach a JSON Schema to a request with `# @schema <ref>` and Reqit will validate the response body against it. Three ref forms are supported:
+
+- **Inline JSON** — `# @schema { "type": "object", "required": ["id"] }`
+- **OpenAPI pointer** — `# @schema openapi:./api.yaml#/components/schemas/User` (walks `$ref`s inside the same doc)
+- **File** — `# @schema file:./user.schema.json[#/definitions/User]`
+
+Failures are reported with a JSON Pointer path (e.g. `/id`), the failing rule (`required`, `type`, `format`…), and a plain-English message. Non-JSON responses are skipped with a warning, not treated as failures. The response-panel **Schema** tab and CLI exit-code wiring land in follow-up PRs — this PR ships the pure core (`src/core/schemaValidator.ts` + `src/core/schemaRef.ts`) so the parser, importer, and future runner all share the same validation path.
+
+```http
+### get user
+# @schema { "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "integer" }, "name": { "type": "string" } } }
+GET https://example.com/api/users/1
+```
+
 ### GraphQL
 
 Mark a request as GraphQL with either a `# @graphql` directive **or** an `X-Request-Kind: graphql` header. The body is the GraphQL document, optionally followed by a blank line and a JSON variables block:
