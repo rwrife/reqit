@@ -106,6 +106,14 @@ Reqit can convert requests from formats you've already got lying around.
 
 Imports never silently overwrite an existing file — you'll be asked to confirm.
 
+## Exporting to other tools
+
+Going the other way — sharing `.http` files with teammates on Postman/Insomnia/Bruno, or with a CI job that only speaks `curl` — is being landed in slices tracked under [#42](https://github.com/rwrife/reqit/issues/42):
+
+- **cURL bundle** — pure exporter in [`src/core/export/curl.ts`](./src/core/export/curl.ts) turns a set of parsed `.http` files into a single runnable bash script (one `curl` per request, grouped by source file). Secret redaction is first-class: values you pass in `redact` are replaced with `***REDACTED***` (or a caller-supplied placeholder) in every URL, header, body **and** in the request-label comment above each command — no partial-token reassembly. `.grpc` and `.ws` inputs in a mixed tree are skipped with a warning rather than failing the export. The `Reqit: Export to cURL bundle…` command that wires this into VS Code is the next slice.
+- **Postman v2.1 collection** — coming next.
+- **OpenAPI 3.x stub from history** — coming after that.
+
 ## Status
 
 🚧 Pre-alpha. Following the plan in [`PLAN.md`](./PLAN.md).
