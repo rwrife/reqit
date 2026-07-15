@@ -7,3 +7,10 @@ export {
   parseSse,
   type SseEvent,
 } from './parser.js';
+export {
+  evaluateSseUntil,
+  SseUntilGate,
+  SseUntilInputSchema,
+  type SseUntilContext,
+  type SseUntilResult,
+} from './until.js';
