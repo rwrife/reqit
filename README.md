@@ -193,6 +193,52 @@ query GetUser($id: ID!) {
 Reqit serializes the outgoing body as `{ query, variables, operationName? }` (defaulting variables to `{}`), auto-detects `operationName` from the first named `query|mutation|subscription`, strips the `X-Request-Kind` marker, sets `Content-Type: application/json` if you didn't, and runs `{{var}}` substitution across both the query and the variables block. The response viewer pretty-prints `data` and `errors` separately when the response looks like GraphQL.
 
 
+## Streaming responses (Server-Sent Events)
+
+When a request returns `Content-Type: text/event-stream`, Reqit treats it as
+a live event stream instead of a single body. Under the hood this is driven
+by a pure, spec-compliant SSE parser + transport (`src/core/sse/`) that has
+no dependency on VS Code or `undici`, so the same code runs in unit tests
+and in the extension host.
+
+Core capabilities available today:
+
+- Full WHATWG SSE frame parsing: `event:`, `data:`, `id:`, `retry:`,
+  multi-line `data:` joining, `:` comments, blank-line dispatch,
+  CR / LF / CRLF terminators, leading BOM tolerated.
+- `# @sse-until <expr>` directive: a single-line JS predicate evaluated
+  against every dispatched event. When it returns truthy, the transport
+  stops draining and closes the stream. Useful for LLM-style streams:
+
+  ```http
+  # @auth openai
+  # @sse-until event.data.includes("[DONE]")
+  POST https://api.openai.com/v1/chat/completions
+  Content-Type: application/json
+
+  {
+    "model": "gpt-4o-mini",
+    "stream": true,
+    "messages": [{ "role": "user", "content": "Say hi." }]
+  }
+  ```
+
+- Reconnect state (`lastEventId`, server-suggested `retry:`) is tracked
+  so callers can send `Last-Event-ID` on the next attempt. A helper
+  clamps absurd `retry:` values into a sane range (default 100ms–30s).
+- Guardrails: `maxEvents`, `maxDurationMs`, `idleMs`, and an
+  `AbortSignal` — all validated up front with `zod` when they come
+  from user data.
+- Transcript format: `formatSseTranscriptLine` emits one JSON object
+  per line (`.sse.jsonl`), safe to `tail -f`. Auth material is never
+  logged by the parser or transport; callers must not funnel secrets
+  into event bodies.
+
+The VS Code response-viewer wiring (streaming mode UI, “Stop stream”
+button, on-disk transcript command) is tracked in
+[#46](https://github.com/rwrife/reqit/issues/46) and lands on top of
+this core in a follow-up.
+
 ## Develop
 
 ```
