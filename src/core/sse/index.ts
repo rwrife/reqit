@@ -14,3 +14,16 @@ export {
   type SseUntilContext,
   type SseUntilResult,
 } from './until.js';
+export {
+  runSseTransport,
+  formatSseTranscriptLine,
+  reconnectHeaders,
+  clampRetryMs,
+  SseTransportUserOptionsSchema,
+  type SseTransportOptions,
+  type SseTransportUserOptions,
+  type SseTransportResult,
+  type SseReconnectState,
+  type SseStopReason,
+  type SseEventMeta,
+} from './transport.js';
