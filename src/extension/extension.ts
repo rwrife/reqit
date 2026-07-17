@@ -2,7 +2,12 @@ import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
-import { renderResponse, renderGrpcInfo } from './responseView.js';
+import { renderResponse, renderGrpcInfo, renderSseResponse, type SseRenderEvent, type SseRenderState } from './responseView.js';
+import {
+  isSseResponse,
+  runSseTransport,
+  sseOptionsFromDirectives,
+} from '../core/sse/index.js';
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
 import { importFromCurlCommand } from './importCurl.js';
@@ -249,14 +254,19 @@ async function runRequest(
       headers: opts.headers,
       body: opts.body,
     });
+    const responseHeaders: Record<string, string> = Object.fromEntries(
+      Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
+    );
+    if (isSseResponse(res.headers)) {
+      await streamSseResponse(context, req, opts, res, responseHeaders, started);
+      return;
+    }
     const bodyText = await res.body.text();
     const elapsedMs = Date.now() - started;
     renderResponse(context, {
       request: opts,
       status: res.statusCode,
-      headers: Object.fromEntries(
-        Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
-      ),
+      headers: responseHeaders,
       body: bodyText,
       elapsedMs,
     });
@@ -270,5 +280,103 @@ async function runRequest(
       body: `// Error after ${elapsedMs}ms\n${(err as Error).stack ?? (err as Error).message}`,
       elapsedMs,
     });
+  }
+}
+
+/**
+ * Drive an SSE response into the streaming response webview.
+ *
+ * Detection lives in the caller (`isSseResponse`). This helper owns:
+ *   - decoding the undici body stream into UTF-8 text chunks,
+ *   - handing them to the pure {@link runSseTransport} driver,
+ *   - refreshing the webview after each event (throttled to a paint),
+ *   - surfacing @sse-until compile errors as a warning note without
+ *     killing the stream.
+ *
+ * Reconnect / `Last-Event-ID` is intentionally not wired in this first
+ * slice; the transport already tracks state, so a follow-up PR can retry
+ * on transport-level failure without touching the parser or the view.
+ */
+async function streamSseResponse(
+  context: vscode.ExtensionContext,
+  req: ParsedRequest,
+  opts: { method: string; url: string; headers: Record<string, string>; body?: string },
+  res: { statusCode: number; body: AsyncIterable<unknown> },
+  responseHeaders: Record<string, string>,
+  _started: number,
+): Promise<void> {
+  const requestForView = opts as unknown as import('../core/request.js').UndiciRequestOptions;
+  const directives = sseOptionsFromDirectives(req.directives);
+  const events: SseRenderEvent[] = [];
+  const initialNote = directives.diagnostics.length > 0
+    ? `SSE directives ignored: ${directives.diagnostics.map((d) => `${d.directive} (${d.message})`).join('; ')}`
+    : undefined;
+  const state: SseRenderState = {
+    request: requestForView,
+    status: res.statusCode,
+    headers: responseHeaders,
+    elapsedMs: 0,
+    events,
+    streaming: true,
+    ...(initialNote !== undefined ? { note: initialNote } : {}),
+  };
+  const handle = renderSseResponse(context, state);
+  const abort = new AbortController();
+  context.subscriptions.push({ dispose: () => abort.abort() });
+
+  // Decode the undici body into UTF-8 strings.
+  const decoder = new TextDecoder('utf-8');
+  const input: AsyncIterable<string> = (async function* (): AsyncGenerator<string> {
+    for await (const chunk of res.body as AsyncIterable<Uint8Array | string>) {
+      if (typeof chunk === 'string') {
+        yield chunk;
+      } else {
+        yield decoder.decode(chunk, { stream: true });
+      }
+    }
+    const tail = decoder.decode();
+    if (tail.length > 0) yield tail;
+  })();
+
+  const options: Parameters<typeof runSseTransport>[0] = {
+    input,
+    signal: abort.signal,
+    onEvent: (event, meta) => {
+      events.push({ event, meta, timestamp: new Date().toISOString() });
+      state.elapsedMs = meta.elapsedMs;
+      handle.update({ ...state, events: [...events] });
+    },
+    ...(directives.options.until !== undefined ? { until: directives.options.until } : {}),
+    ...(directives.options.maxEvents !== undefined ? { maxEvents: directives.options.maxEvents } : {}),
+    ...(directives.options.maxDurationMs !== undefined
+      ? { maxDurationMs: directives.options.maxDurationMs }
+      : {}),
+    ...(directives.options.idleMs !== undefined ? { idleMs: directives.options.idleMs } : {}),
+  };
+
+  try {
+    const result = await runSseTransport(options);
+    const parts: string[] = [];
+    if (initialNote) parts.push(initialNote);
+    if (result.untilError) parts.push(`@sse-until error: ${result.untilError}`);
+    const finalNote = parts.length > 0 ? parts.join(' | ') : undefined;
+    handle.update({
+      ...state,
+      streaming: false,
+      stopReason: result.reason,
+      elapsedMs: result.durationMs,
+      events: [...events],
+      ...(finalNote !== undefined ? { note: finalNote } : {}),
+    });
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    handle.update({
+      ...state,
+      streaming: false,
+      stopReason: 'end-of-stream',
+      events: [...events],
+      note: `SSE transport failed: ${message}`,
+    });
+    vscode.window.showErrorMessage(`Reqit: SSE stream failed \u2014 ${message}`);
   }
 }
