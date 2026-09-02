@@ -6,7 +6,20 @@
 
 **Test it before you req it!**
 
-A VS Code extension for testing HTTP services from inside your editor — with first-class auth (mTLS, JWT, OAuth2).
+A local-first VS Code API workbench for testing HTTP services — with first-class auth (mTLS, JWT, OAuth2) and a path to near-Postman-complete workflows without a Reqit cloud or separate desktop shell.
+
+## Product direction and boundaries
+
+Reqit targets **Postman-class workflow and capability parity** for creating, organizing, editing, sending, inspecting, testing, importing/exporting, and automating API requests. It is not a pixel-for-pixel clone. `.requests/` workspace files remain the portable source of truth. Reqit is delivered today as a VS Code extension with pure TypeScript core modules; the roadmap extracts those modules for a small CLI and optional local MCP package rather than adding another desktop shell.
+
+Non-negotiable boundaries:
+
+- no Reqit accounts, first-party backend, hosted sync/collaboration/monitors/mocks, telemetry, crash upload, or opaque cloud storage;
+- no bundled Electron shell, always-on daemon, or heavyweight/native data store without a measured, approved architecture exception;
+- the architecture requires secret values to stay in VS Code SecretStorage or an explicitly configured local provider and to be redacted/excluded from logs, history, exports, clipboard, Git, errors, fixtures, and MCP outputs by default; the sole storage exception is an explicitly selected user-managed mTLS private-key/PFX file accessed in place through the fail-closed read-only secret-file capability; [known implementation gaps](./docs/security/local-data-and-threat-model.md#known-current-gaps) must close before the affected roadmap capabilities claim compliance;
+- optional backup uses a Git repository selected by the user and system Git credentials; MCP defaults to local stdio.
+
+See [ADR 0001](./docs/adr/0001-local-first-postman-class-architecture.md), the [local data contract and threat model](./docs/security/local-data-and-threat-model.md), and the [performance and footprint budgets](./docs/performance-budgets.md).
 
 ## Why
 
@@ -192,7 +205,6 @@ query GetUser($id: ID!) {
 
 Reqit serializes the outgoing body as `{ query, variables, operationName? }` (defaulting variables to `{}`), auto-detects `operationName` from the first named `query|mutation|subscription`, strips the `X-Request-Kind` marker, sets `Content-Type: application/json` if you didn't, and runs `{{var}}` substitution across both the query and the variables block. The response viewer pretty-prints `data` and `errors` separately when the response looks like GraphQL.
 
-
 ## Streaming responses (Server-Sent Events)
 
 When a request returns `Content-Type: text/event-stream`, Reqit treats it as
@@ -239,6 +251,7 @@ Core capabilities available today:
 
   Any non-positive-integer value is surfaced as a warning banner in the
   response panel and dropped — the stream keeps running with the defaults.
+
 - Transcript format: `formatSseTranscriptLine` emits one JSON object
   per line (`.sse.jsonl`), safe to `tail -f`. Auth material is never
   logged by the parser or transport; callers must not funnel secrets
@@ -248,9 +261,10 @@ The VS Code response-viewer wiring for SSE now lives on top of this
 core: when `Send Request` fires a request whose response has
 `Content-Type: text/event-stream`, the response panel switches into
 streaming mode and appends events (with type, id, elapsed time and
-pretty-printed `data`) live as they arrive. The stream stops on any of
-the guardrails above, or when you close the panel / reload the window.
-Reconnect + `Last-Event-ID` retry, an on-disk `.sse.jsonl` transcript
+pretty-printed `data`) live as they arrive. The stream currently stops on the
+guardrails above or when the extension host reloads/disposes. Closing the panel
+does not yet abort the socket; that known #55 cancellation gap is documented in
+the threat model. Reconnect + `Last-Event-ID` retry, an on-disk `.sse.jsonl` transcript
 command, and a dedicated “Stop stream” button remain tracked in
 [#46](https://github.com/rwrife/reqit/issues/46) and land in follow-ups.
 
@@ -273,4 +287,3 @@ See [`CHANGELOG.md`](./CHANGELOG.md).
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).
-
