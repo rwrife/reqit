@@ -228,16 +228,31 @@ Core capabilities available today:
   clamps absurd `retry:` values into a sane range (default 100ms–30s).
 - Guardrails: `maxEvents`, `maxDurationMs`, `idleMs`, and an
   `AbortSignal` — all validated up front with `zod` when they come
-  from user data.
+  from user data. Configurable per-request via directives:
+
+  ```http
+  # @sse-max-events 50
+  # @sse-max-duration-ms 30000
+  # @sse-idle-ms 5000
+  # @sse-until event.data.includes("[DONE]")
+  ```
+
+  Any non-positive-integer value is surfaced as a warning banner in the
+  response panel and dropped — the stream keeps running with the defaults.
 - Transcript format: `formatSseTranscriptLine` emits one JSON object
   per line (`.sse.jsonl`), safe to `tail -f`. Auth material is never
   logged by the parser or transport; callers must not funnel secrets
   into event bodies.
 
-The VS Code response-viewer wiring (streaming mode UI, “Stop stream”
-button, on-disk transcript command) is tracked in
-[#46](https://github.com/rwrife/reqit/issues/46) and lands on top of
-this core in a follow-up.
+The VS Code response-viewer wiring for SSE now lives on top of this
+core: when `Send Request` fires a request whose response has
+`Content-Type: text/event-stream`, the response panel switches into
+streaming mode and appends events (with type, id, elapsed time and
+pretty-printed `data`) live as they arrive. The stream stops on any of
+the guardrails above, or when you close the panel / reload the window.
+Reconnect + `Last-Event-ID` retry, an on-disk `.sse.jsonl` transcript
+command, and a dedicated “Stop stream” button remain tracked in
+[#46](https://github.com/rwrife/reqit/issues/46) and land in follow-ups.
 
 ## Develop
 

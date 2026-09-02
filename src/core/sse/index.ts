@@ -15,6 +15,12 @@ export {
   type SseUntilResult,
 } from './until.js';
 export {
+  sseOptionsFromDirectives,
+  isSseResponse,
+  type SseDirectiveDiagnostic,
+  type SseDirectivesResult,
+} from './directives.js';
+export {
   runSseTransport,
   formatSseTranscriptLine,
   reconnectHeaders,
