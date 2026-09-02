@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "measuredAtUtc": "2026-09-02T20:31:00Z",
+  "source": {
+    "repository": "https://github.com/rwrife/reqit",
+    "commit": "6168569b514d93bc31695a713c7c9743c551d1b5",
+    "dirty": false
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "nodeVersion": "22.11.0",
+    "npmVersion": "10.9.0",
+    "containerImage": "node:22.11.0-bookworm-slim",
+    "containerDigest": "node@sha256:f035ba7ffee18f67200e2eb8018e0f13c954ec16338f264940f701997e3c12da",
+    "containerImageId": "sha256:8b65ed98fdc41a095fe4eb3c7bbb93fe5440b2b383fffb0f891883f97ca35199",
+    "vsceVersion": "3.6.0"
+  },
+  "commands": [
+    "npm ci --no-audit --no-fund",
+    "npm run build",
+    "wc -c dist/extension.js dist/extension.js.map",
+    "npm ls --omit=dev --all --json",
+    "npx --yes @vscode/vsce@3.6.0 package --no-dependencies --out /tmp/reqit-baseline.vsix",
+    "stat -c %s /tmp/reqit-baseline.vsix",
+    "sha256sum /tmp/reqit-baseline.vsix",
+    "unzip -l /tmp/reqit-baseline.vsix"
+  ],
+  "measurements": {
+    "extensionBundleBytes": 1272780,
+    "extensionSourceMapBytes": 2308781,
+    "vsixBytes": 791596,
+    "vsixSha256": "0e2394275679bcea973c00403327d07015b035a6822d1d2340617e56096a8583",
+    "vsixFileCount": 20,
+    "vsixUncompressedArchiveBytes": 3645474,
+    "installedVsixContentBytes": 3641676,
+    "vsixContainsSourceMap": true,
+    "directRuntimeDependencies": 5,
+    "productionDependencyNodesExcludingRoot": 9,
+    "activationColdP95Ms": null,
+    "activationWarmP95Ms": null,
+    "idleMemoryDeltaP95MiB": null,
+    "index1000P95Ms": null,
+    "search1000P95Ms": null,
+    "cliColdHelpP95Ms": null,
+    "mcpColdInitializeP95Ms": null
+  },
+  "rawEvidence": {
+    "directRuntimeDependencies": {
+      "ajv": "8.20.0",
+      "ajv-formats": "3.0.1",
+      "undici": "6.26.0",
+      "yaml": "2.9.0",
+      "zod": "3.25.76"
+    },
+    "productionDependencyNodes": [
+      "ajv-formats@3.0.1",
+      "ajv@8.20.0",
+      "fast-deep-equal@3.1.3",
+      "fast-uri@3.1.3",
+      "json-schema-traverse@1.0.0",
+      "require-from-string@2.0.2",
+      "undici@6.26.0",
+      "yaml@2.9.0",
+      "zod@3.25.76"
+    ],
+    "vsixEntries": [
+      { "path": "extension.vsixmanifest", "uncompressedBytes": 3163 },
+      { "path": "[Content_Types].xml", "uncompressedBytes": 635 },
+      { "path": "extension/package.json", "uncompressedBytes": 5124 },
+      { "path": "extension/language-configuration.json", "uncompressedBytes": 93 },
+      { "path": "extension/language-configuration.grpc.json", "uncompressedBytes": 93 },
+      { "path": "extension/RELEASING.md", "uncompressedBytes": 5157 },
+      { "path": "extension/readme.md", "uncompressedBytes": 14694 },
+      { "path": "extension/LICENSE.txt", "uncompressedBytes": 1066 },
+      { "path": "extension/changelog.md", "uncompressedBytes": 4611 },
+      { "path": "extension/syntaxes/http.tmLanguage.json", "uncompressedBytes": 1156 },
+      { "path": "extension/syntaxes/grpc.tmLanguage.json", "uncompressedBytes": 1381 },
+      { "path": "extension/scripts/preflight-release.mjs", "uncompressedBytes": 5133 },
+      { "path": "extension/scripts/generate-icon.mjs", "uncompressedBytes": 8023 },
+      { "path": "extension/media/icon@2x.png", "uncompressedBytes": 4216 },
+      { "path": "extension/media/icon.png", "uncompressedBytes": 2093 },
+      { "path": "extension/dist/extension.js.map", "uncompressedBytes": 2308781 },
+      { "path": "extension/dist/extension.js", "uncompressedBytes": 1272780 },
+      { "path": "extension/.github/workflows/release.yml", "uncompressedBytes": 1042 },
+      { "path": "extension/.github/workflows/package.yml", "uncompressedBytes": 2026 },
+      { "path": "extension/.github/workflows/ci.yml", "uncompressedBytes": 4207 }
+    ]
+  },
+  "derivations": {
+    "vsixFileCount": "length(rawEvidence.vsixEntries)",
+    "vsixUncompressedArchiveBytes": "sum(uncompressedBytes for all rawEvidence.vsixEntries)",
+    "installedVsixContentBytes": "sum(uncompressedBytes where path starts with extension/)",
+    "directRuntimeDependencies": "number of keys in rawEvidence.directRuntimeDependencies",
+    "productionDependencyNodesExcludingRoot": "length(rawEvidence.productionDependencyNodes)"
+  },
+  "issue54CandidateSnapshot": {
+    "measuredAtUtc": "2026-09-02T21:14:18Z",
+    "baseCommit": "6168569b514d93bc31695a713c7c9743c551d1b5",
+    "command": "npx --yes @vscode/vsce@3.6.0 package --no-dependencies --out /out/reqit-candidate-final.vsix",
+    "vsixBytes": 792456,
+    "vsixSha256": "3ab4c72d296f9c32e27a537317d5c9ed3ef90d6fdc66577d9b35f1f4286a6494",
+    "vsixFileCount": 20,
+    "vsixUncompressedArchiveBytes": 3647630,
+    "installedVsixContentBytes": 3643832,
+    "compressedDeltaBytes": 860,
+    "compressedDeltaPercent": 0.11,
+    "installedDeltaBytes": 2156,
+    "installedDeltaPercent": 0.06,
+    "directRuntimeDependencyDelta": 0,
+    "productionDependencyNodeDelta": 0,
+    "packagedDocsEntries": 0,
+    "packagingPolicyChange": "docs/** added to .vscodeignore"
+  },
+  "notes": [
+    "Null values are unmeasured, not zero and not passing evidence.",
+    "The measured VSIX contains dist/extension.js.map because the current ignore pattern does not exclude nested source maps; issue #62 owns enforcement of the zero-byte release rule.",
+    "The SHA-256 binds this captured archive. ZIP entry timestamps can change its hash across otherwise content-identical rebuilds; use the retained entry manifest and byte totals for current reproducibility checks until #62 normalizes archive metadata."
+  ]
+}

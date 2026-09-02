@@ -11,3 +11,4 @@ tsconfig.json
 .prettierrc.json
 .gitignore
 PLAN.md
+docs/**
