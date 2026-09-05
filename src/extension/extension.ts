@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { dirname } from 'node:path';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
@@ -245,13 +244,7 @@ function buildLastSseTranscript(
   };
 }
 
-async function saveLastSseTranscript(): Promise<void> {
-  const transcript = lastSseTranscript;
-  if (!transcript || !transcript.content) {
-    vscode.window.showInformationMessage('Reqit: no SSE transcript captured yet.');
-    return;
-  }
-
+async function saveSseTranscript(transcript: LastSseTranscript): Promise<void> {
   const workspace = vscode.workspace.workspaceFolders?.[0];
   const defaultUri = workspace
     ? vscode.Uri.joinPath(workspace.uri, '.requests', '.history', transcript.suggestedFileName)
@@ -264,11 +257,26 @@ async function saveLastSseTranscript(): Promise<void> {
   });
   if (!target) return;
 
-  await vscode.workspace.fs.createDirectory(vscode.Uri.file(dirname(target.fsPath)));
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
   await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(transcript.content));
   vscode.window.showInformationMessage(
     `Reqit: saved SSE transcript (${transcript.eventCount} events).`,
   );
+}
+
+async function saveLastSseTranscript(): Promise<void> {
+  const transcript = lastSseTranscript;
+  if (!transcript || !transcript.content) {
+    vscode.window.showInformationMessage('Reqit: no SSE transcript captured yet.');
+    return;
+  }
+
+  try {
+    await saveSseTranscript(transcript);
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    vscode.window.showErrorMessage(`Reqit: failed to save SSE transcript — ${message}`);
+  }
 }
 
 async function runRequest(
@@ -438,7 +446,14 @@ async function streamSseResponse(
         'Save transcript',
       );
       if (action === 'Save transcript') {
-        await saveLastSseTranscript();
+        try {
+          await saveSseTranscript(transcript);
+        } catch (err) {
+          const message = (err as Error).message ?? String(err);
+          vscode.window.showWarningMessage(
+            `Reqit: stream completed but transcript save failed — ${message}`,
+          );
+        }
       }
     }
   } catch (err) {
