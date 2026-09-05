@@ -33,3 +33,8 @@ export {
   type SseStopReason,
   type SseEventMeta,
 } from './transport.js';
+export {
+  buildSseTranscriptFileName,
+  serializeSseTranscript,
+  type SseTranscriptRecord,
+} from './transcript.js';

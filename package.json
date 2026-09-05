@@ -55,6 +55,7 @@
     "onCommand:reqit.initWorkspace",
     "onCommand:reqit.importFromCurl",
     "onCommand:reqit.importFromOpenApi",
+    "onCommand:reqit.saveSseTranscript",
     "workspaceContains:.requests",
     "workspaceContains:.requests/**/*.http",
     "workspaceContains:.requests/**/*.grpc"
@@ -138,6 +139,11 @@
       {
         "command": "reqit.selectEnv",
         "title": "Reqit: Select Environment",
+        "category": "Reqit"
+      },
+      {
+        "command": "reqit.saveSseTranscript",
+        "title": "Reqit: Save Last SSE Transcript",
         "category": "Reqit"
       },
       {

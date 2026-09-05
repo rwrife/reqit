@@ -261,12 +261,14 @@ The VS Code response-viewer wiring for SSE now lives on top of this
 core: when `Send Request` fires a request whose response has
 `Content-Type: text/event-stream`, the response panel switches into
 streaming mode and appends events (with type, id, elapsed time and
-pretty-printed `data`) live as they arrive. The stream currently stops on the
-guardrails above or when the extension host reloads/disposes. Closing the panel
-does not yet abort the socket; that known #55 cancellation gap is documented in
-the threat model. Reconnect + `Last-Event-ID` retry, an on-disk `.sse.jsonl` transcript
-command, and a dedicated “Stop stream” button remain tracked in
-[#46](https://github.com/rwrife/reqit/issues/46) and land in follow-ups.
+pretty-printed `data`) live as they arrive. When a stream ends, Reqit caches the
+captured event transcript and offers **Save transcript**; you can also run
+`Reqit: Save Last SSE Transcript` from the command palette to write
+`.sse.jsonl` into `.requests/.history/` (or another path you choose). Closing the
+panel still does not abort the socket; that known #55 cancellation gap is documented
+in the threat model. Reconnect + `Last-Event-ID` retry and a dedicated “Stop stream”
+button remain tracked in [#46](https://github.com/rwrife/reqit/issues/46) and land in
+follow-ups.
 
 ## Develop
 
