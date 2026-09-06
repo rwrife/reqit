@@ -12,7 +12,7 @@ import {
 import {
   buildSseTranscriptFileName,
   isSseResponse,
-  runSseTransport,
+  runSseTransportWithReconnect,
   serializeSseTranscript,
   sseOptionsFromDirectives,
   type SseTranscriptRecord,
@@ -358,19 +358,19 @@ async function runRequest(
  *   - surfacing @sse-until compile errors as a warning note without
  *     killing the stream.
  *
- * Reconnect / `Last-Event-ID` is intentionally not wired in this first
- * slice; the transport already tracks state, so a follow-up PR can retry
- * on transport-level failure without touching the parser or the view.
+ * Reconnect / `Last-Event-ID` is wired through the pure core transport
+ * helper (`runSseTransportWithReconnect`) with a bounded reconnect budget.
+ * The extension adapter only opens sockets and paints the webview.
  */
 async function streamSseResponse(
   context: vscode.ExtensionContext,
   req: ParsedRequest,
-  opts: { method: string; url: string; headers: Record<string, string>; body?: string },
+  opts: import('../core/request.js').UndiciRequestOptions,
   res: { statusCode: number; body: AsyncIterable<unknown> },
   responseHeaders: Record<string, string>,
   _started: number,
 ): Promise<void> {
-  const requestForView = opts as unknown as import('../core/request.js').UndiciRequestOptions;
+  const requestForView = opts;
   const directives = sseOptionsFromDirectives(req.directives);
   const events: SseRenderEvent[] = [];
   const transcriptRecords: SseTranscriptRecord[] = [];
@@ -391,10 +391,11 @@ async function streamSseResponse(
   const abort = new AbortController();
   context.subscriptions.push({ dispose: () => abort.abort() });
 
-  // Decode the undici body into UTF-8 strings.
-  const decoder = new TextDecoder('utf-8');
-  const input: AsyncIterable<string> = (async function* (): AsyncGenerator<string> {
-    for await (const chunk of res.body as AsyncIterable<Uint8Array | string>) {
+  const decodeBody = (
+    body: AsyncIterable<Uint8Array | string>,
+  ): AsyncIterable<string> => (async function* (): AsyncGenerator<string> {
+    const decoder = new TextDecoder('utf-8');
+    for await (const chunk of body) {
       if (typeof chunk === 'string') {
         yield chunk;
       } else {
@@ -405,8 +406,39 @@ async function streamSseResponse(
     if (tail.length > 0) yield tail;
   })();
 
-  const options: Parameters<typeof runSseTransport>[0] = {
-    input,
+  let usedInitialResponse = false;
+  const { request } = await import('undici');
+
+  const options: Parameters<typeof runSseTransportWithReconnect>[0] = {
+    connect: async ({ headers }) => {
+      if (!usedInitialResponse) {
+        usedInitialResponse = true;
+        return decodeBody(res.body as AsyncIterable<Uint8Array | string>);
+      }
+      const reconnectResponse = await request(opts.url, {
+        method: opts.method,
+        headers: {
+          ...opts.headers,
+          ...headers,
+        },
+        body: opts.body,
+      });
+      if (!isSseResponse(reconnectResponse.headers as Record<string, string | string[] | undefined>)) {
+        const contentType = reconnectResponse.headers['content-type'];
+        const contentTypeText = Array.isArray(contentType)
+          ? contentType.join(', ')
+          : String(contentType ?? 'unknown');
+        throw new Error(`SSE reconnect response is not event-stream (content-type=${contentTypeText})`);
+      }
+      state.status = reconnectResponse.statusCode;
+      state.headers = Object.fromEntries(
+        Object.entries(reconnectResponse.headers).map(([k, v]) => [
+          k,
+          Array.isArray(v) ? v.join(', ') : String(v ?? ''),
+        ]),
+      );
+      return decodeBody(reconnectResponse.body.setEncoding('utf8'));
+    },
     signal: abort.signal,
     onEvent: (event, meta) => {
       const eventTimestampMs = Date.now();
@@ -424,10 +456,16 @@ async function streamSseResponse(
   };
 
   try {
-    const result = await runSseTransport(options);
+    const result = await runSseTransportWithReconnect(options);
     const parts: string[] = [];
     if (initialNote) parts.push(initialNote);
     if (result.untilError) parts.push(`@sse-until error: ${result.untilError}`);
+    if (result.reconnectCount > 0) {
+      parts.push(`reconnected ${result.reconnectCount}x`);
+    }
+    if (result.reason === 'reconnect-limit') {
+      parts.push('reconnect limit reached');
+    }
     const finalNote = parts.length > 0 ? parts.join(' | ') : undefined;
     handle.update({
       ...state,

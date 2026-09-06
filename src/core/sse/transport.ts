@@ -50,7 +50,8 @@ export type SseStopReason =
   | 'until-matched'
   | 'max-events'
   | 'max-duration'
-  | 'idle-timeout';
+  | 'idle-timeout'
+  | 'reconnect-limit';
 
 /**
  * Persistent reconnect state carried across connection attempts. The
@@ -119,6 +120,25 @@ export interface SseTransportResult {
   reconnect: SseReconnectState;
   /** `@sse-until` compile/runtime error, if any (does not force stop). */
   untilError?: string;
+}
+
+export interface SseReconnectConnectContext {
+  attempt: number;
+  reconnect: Readonly<SseReconnectState>;
+  headers: Readonly<Record<string, string>>;
+}
+
+export interface SseTransportWithReconnectOptions
+  extends Omit<SseTransportOptions, 'input' | 'reconnect'> {
+  connect: (ctx: SseReconnectConnectContext) => Promise<AsyncIterable<string>>;
+  reconnect?: SseReconnectState;
+  maxReconnects?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface SseTransportWithReconnectResult extends SseTransportResult {
+  attempts: number;
+  reconnectCount: number;
 }
 
 /**
@@ -230,6 +250,106 @@ export async function runSseTransport(
     reconnect,
     untilError: gate?.error,
   };
+}
+
+export async function runSseTransportWithReconnect(
+  options: SseTransportWithReconnectOptions,
+): Promise<SseTransportWithReconnectResult> {
+  const now = options.now ?? Date.now;
+  const reconnect: SseReconnectState = options.reconnect ?? {
+    lastEventId: undefined,
+    retryMs: undefined,
+  };
+  const maxReconnects = options.maxReconnects ?? 5;
+  const sleep =
+    options.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      }));
+  let attempts = 0;
+  let reconnectCount = 0;
+  let totalEvents = 0;
+  const startedAt = now();
+  let untilError: string | undefined;
+
+  while (attempts <= maxReconnects) {
+    const input = await options.connect({
+      attempt: attempts,
+      reconnect,
+      headers: reconnectHeaders(reconnect),
+    });
+    attempts += 1;
+
+    const result = await runSseTransport({
+      input,
+      onEvent: options.onEvent,
+      ...(options.until !== undefined ? { until: options.until } : {}),
+      ...(options.maxEvents !== undefined ? { maxEvents: options.maxEvents } : {}),
+      ...(options.maxDurationMs !== undefined
+        ? { maxDurationMs: options.maxDurationMs }
+        : {}),
+      ...(options.idleMs !== undefined ? { idleMs: options.idleMs } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      reconnect,
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+
+    totalEvents += result.eventCount;
+    untilError = result.untilError;
+
+    if (result.reason !== 'end-of-stream') {
+      return {
+        ...result,
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+
+    if (options.signal?.aborted) {
+      return {
+        ...result,
+        reason: 'aborted',
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+
+    if (reconnectCount >= maxReconnects) {
+      return {
+        ...result,
+        reason: 'reconnect-limit',
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+
+    reconnectCount += 1;
+    const sleepMs = clampRetryMs(reconnect.retryMs);
+    await sleep(sleepMs);
+    if (options.signal?.aborted) {
+      return {
+        ...result,
+        reason: 'aborted',
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+  }
+
+  throw new Error('SSE reconnect loop exhausted unexpectedly');
 }
 
 /**
