@@ -22,13 +22,17 @@ export {
 } from './directives.js';
 export {
   runSseTransport,
+  runSseTransportWithReconnect,
   formatSseTranscriptLine,
   reconnectHeaders,
   clampRetryMs,
   SseTransportUserOptionsSchema,
   type SseTransportOptions,
+  type SseTransportWithReconnectOptions,
   type SseTransportUserOptions,
   type SseTransportResult,
+  type SseTransportWithReconnectResult,
+  type SseReconnectConnectContext,
   type SseReconnectState,
   type SseStopReason,
   type SseEventMeta,

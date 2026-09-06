@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   runSseTransport,
+  runSseTransportWithReconnect,
   formatSseTranscriptLine,
   reconnectHeaders,
   clampRetryMs,
@@ -225,6 +226,59 @@ describe('runSseTransport — stop conditions', () => {
     expect(result.reason).toBe('end-of-stream');
     expect(seen).toEqual(['a', 'b']);
     expect(result.untilError).toBeTruthy();
+  });
+});
+
+describe('runSseTransportWithReconnect', () => {
+  it('reconnects with Last-Event-ID and returns reconnect-limit when budget is exhausted', async () => {
+    const seenHeaders: string[] = [];
+    const seenEvents: string[] = [];
+    const chunksByAttempt: string[][] = [
+      ['id: one\nretry: 1\ndata: first\n\n'],
+      ['id: two\ndata: second\n\n'],
+    ];
+
+    const result = await runSseTransportWithReconnect({
+      maxReconnects: 1,
+      connect: async ({ attempt, headers }) => {
+        seenHeaders.push(headers['Last-Event-ID'] ?? '');
+        return iter(chunksByAttempt[attempt] ?? []);
+      },
+      onEvent: (event) => {
+        seenEvents.push(event.data);
+      },
+      sleep: async () => {},
+    });
+
+    expect(seenHeaders).toEqual(['', 'one']);
+    expect(seenEvents).toEqual(['first', 'second']);
+    expect(result.reason).toBe('reconnect-limit');
+    expect(result.eventCount).toBe(2);
+    expect(result.reconnect.lastEventId).toBe('two');
+    expect(result.reconnectCount).toBe(1);
+    expect(result.attempts).toBe(2);
+  });
+
+  it('does not reconnect when the first run stops for a non-end-of-stream reason', async () => {
+    const attempts: number[] = [];
+    const result = await runSseTransportWithReconnect({
+      maxReconnects: 5,
+      connect: async ({ attempt }) => {
+        attempts.push(attempt);
+        return iter(['data: a\n\ndata: b\n\n']);
+      },
+      onEvent: () => {},
+      maxEvents: 1,
+      sleep: async () => {
+        throw new Error('sleep should not be called when not reconnecting');
+      },
+    });
+
+    expect(result.reason).toBe('max-events');
+    expect(result.eventCount).toBe(1);
+    expect(result.reconnectCount).toBe(0);
+    expect(result.attempts).toBe(1);
+    expect(attempts).toEqual([0]);
   });
 });
 
