@@ -2,11 +2,20 @@ import * as vscode from 'vscode';
 import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
-import { renderResponse, renderGrpcInfo, renderSseResponse, type SseRenderEvent, type SseRenderState } from './responseView.js';
 import {
+  renderResponse,
+  renderGrpcInfo,
+  renderSseResponse,
+  type SseRenderEvent,
+  type SseRenderState,
+} from './responseView.js';
+import {
+  buildSseTranscriptFileName,
   isSseResponse,
   runSseTransport,
+  serializeSseTranscript,
   sseOptionsFromDirectives,
+  type SseTranscriptRecord,
 } from '../core/sse/index.js';
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
@@ -16,6 +25,14 @@ import { importFromOpenApiCommand } from './importOpenapi.js';
 import { RequestsTreeProvider } from './requestsTree.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
+
+interface LastSseTranscript {
+  content: string;
+  suggestedFileName: string;
+  eventCount: number;
+}
+
+let lastSseTranscript: LastSseTranscript | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
@@ -60,6 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
+    vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),
     vscode.commands.registerCommand(
       'reqit.copyAsCurl',
       async (arg?: { documentUri: string; requestLineIndex: number; revealSecrets?: boolean }) => {
@@ -214,6 +232,53 @@ class GrpcCodeLensProvider implements vscode.CodeLensProvider {
   }
 }
 
+function buildLastSseTranscript(
+  records: readonly SseTranscriptRecord[],
+): LastSseTranscript | undefined {
+  if (records.length === 0) return undefined;
+  const firstTimestamp = records[0]?.timestampMs ?? Date.now();
+  return {
+    content: serializeSseTranscript(records),
+    suggestedFileName: buildSseTranscriptFileName(firstTimestamp),
+    eventCount: records.length,
+  };
+}
+
+async function saveSseTranscript(transcript: LastSseTranscript): Promise<void> {
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  const defaultUri = workspace
+    ? vscode.Uri.joinPath(workspace.uri, '.requests', '.history', transcript.suggestedFileName)
+    : undefined;
+
+  const target = await vscode.window.showSaveDialog({
+    saveLabel: 'Save SSE transcript',
+    filters: { JSONL: ['jsonl'] },
+    defaultUri,
+  });
+  if (!target) return;
+
+  await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
+  await vscode.workspace.fs.writeFile(target, new TextEncoder().encode(transcript.content));
+  vscode.window.showInformationMessage(
+    `Reqit: saved SSE transcript (${transcript.eventCount} events).`,
+  );
+}
+
+async function saveLastSseTranscript(): Promise<void> {
+  const transcript = lastSseTranscript;
+  if (!transcript || !transcript.content) {
+    vscode.window.showInformationMessage('Reqit: no SSE transcript captured yet.');
+    return;
+  }
+
+  try {
+    await saveSseTranscript(transcript);
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    vscode.window.showErrorMessage(`Reqit: failed to save SSE transcript — ${message}`);
+  }
+}
+
 async function runRequest(
   context: vscode.ExtensionContext,
   req: ParsedRequest,
@@ -308,6 +373,8 @@ async function streamSseResponse(
   const requestForView = opts as unknown as import('../core/request.js').UndiciRequestOptions;
   const directives = sseOptionsFromDirectives(req.directives);
   const events: SseRenderEvent[] = [];
+  const transcriptRecords: SseTranscriptRecord[] = [];
+  lastSseTranscript = undefined;
   const initialNote = directives.diagnostics.length > 0
     ? `SSE directives ignored: ${directives.diagnostics.map((d) => `${d.directive} (${d.message})`).join('; ')}`
     : undefined;
@@ -342,7 +409,9 @@ async function streamSseResponse(
     input,
     signal: abort.signal,
     onEvent: (event, meta) => {
-      events.push({ event, meta, timestamp: new Date().toISOString() });
+      const eventTimestampMs = Date.now();
+      events.push({ event, meta, timestamp: new Date(eventTimestampMs).toISOString() });
+      transcriptRecords.push({ event, index: meta.index, timestampMs: eventTimestampMs });
       state.elapsedMs = meta.elapsedMs;
       handle.update({ ...state, events: [...events] });
     },
@@ -368,8 +437,28 @@ async function streamSseResponse(
       events: [...events],
       ...(finalNote !== undefined ? { note: finalNote } : {}),
     });
+
+    lastSseTranscript = buildLastSseTranscript(transcriptRecords);
+    if (lastSseTranscript !== undefined) {
+      const transcript = lastSseTranscript;
+      const action = await vscode.window.showInformationMessage(
+        `Reqit: SSE stream captured ${transcript.eventCount} events.`,
+        'Save transcript',
+      );
+      if (action === 'Save transcript') {
+        try {
+          await saveSseTranscript(transcript);
+        } catch (err) {
+          const message = (err as Error).message ?? String(err);
+          vscode.window.showWarningMessage(
+            `Reqit: stream completed but transcript save failed — ${message}`,
+          );
+        }
+      }
+    }
   } catch (err) {
     const message = (err as Error).message ?? String(err);
+    lastSseTranscript = buildLastSseTranscript(transcriptRecords);
     handle.update({
       ...state,
       streaming: false,
