@@ -52,10 +52,6 @@ jobs:
         if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run footprint:ci
 
-      - name: Package
-        if: steps.pkg.outputs.has_pkg == 'true'
-        run: npx --yes @vscode/vsce@3.6.0 package --no-dependencies --out reqit.vsix
-
       - name: Upload VSIX artifact
         if: steps.pkg.outputs.has_pkg == 'true'
         uses: actions/upload-artifact@v4

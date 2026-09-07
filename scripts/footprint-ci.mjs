@@ -28,6 +28,7 @@ async function main() {
   const vsixStat = await stat(vsixPath);
   const unzipListOutput = run('unzip', ['-l', vsixPath]);
   const vsixEntries = parseUnzipList(unzipListOutput);
+  validateParsedVsixEntries(vsixEntries);
 
   const packageJson = JSON.parse(await readFile(path.resolve(repoRoot, 'package.json'), 'utf8'));
   const directRuntimeDependencies = countDirectRuntimeDependencies(packageJson);
@@ -62,6 +63,8 @@ async function main() {
   const commitSha = runOptional('git', ['rev-parse', 'HEAD'])?.trim() ?? null;
   const dirtyStatus = runOptional('git', ['status', '--porcelain']);
 
+  const relVsixPath = path.relative(repoRoot, vsixPath);
+
   const output = {
     schemaVersion: 1,
     measuredAtUtc: new Date().toISOString(),
@@ -79,8 +82,8 @@ async function main() {
     },
     commands: [
       'npm run build',
-      `npx --yes @vscode/vsce@${VSCE_VERSION} package --no-dependencies --out artifacts/reqit-footprint.vsix`,
-      'unzip -l artifacts/reqit-footprint.vsix',
+      `npx --yes @vscode/vsce@${VSCE_VERSION} package --no-dependencies --out ${relVsixPath}`,
+      `unzip -l ${relVsixPath}`,
       'npm ls --omit=dev --all --json',
     ],
     baseline: {
@@ -201,7 +204,7 @@ function numberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function parseUnzipList(stdout) {
+export function parseUnzipList(stdout) {
   const entries = [];
   for (const line of stdout.split(/\r?\n/)) {
     const match = line.match(
@@ -216,6 +219,23 @@ function parseUnzipList(stdout) {
     });
   }
   return entries;
+}
+
+export function validateParsedVsixEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error('Could not parse VSIX entries from unzip output; refusing to evaluate footprint budgets.');
+  }
+
+  const hasPackageJson = entries.some((entry) => entry.path === 'extension/package.json');
+  const hasExtensionJs = entries.some(
+    (entry) => entry.path === 'extension/dist/extension.js' || entry.path.endsWith('/dist/extension.js'),
+  );
+
+  if (!hasPackageJson || !hasExtensionJs) {
+    throw new Error(
+      'Parsed VSIX entries are missing required release files (extension/package.json and extension/dist/extension.js); refusing fail-open budget evaluation.',
+    );
+  }
 }
 
 function sumEntryBytes(entries, predicate) {
@@ -277,8 +297,10 @@ function run(command, args) {
   return result.stdout ?? '';
 }
 
-main().catch((error) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
-  console.error(message);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(message);
+    process.exit(1);
+  });
+}

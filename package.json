@@ -195,7 +195,7 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,json,md}\"",
     "icon": "node ./scripts/generate-icon.mjs",
     "preflight": "node ./scripts/preflight-release.mjs",
-    "footprint:ci": "node ./scripts/footprint-ci.mjs --output artifacts/footprint.json"
+    "footprint:ci": "node ./scripts/footprint-ci.mjs --output artifacts/footprint.json --vsix reqit.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
