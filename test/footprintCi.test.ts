@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseUnzipList, validateParsedVsixEntries } from '../scripts/footprint-ci.mjs';
+import { parseVsixUnzipList, validateVsixEntries } from '../src/core/vsixArchive';
 
 describe('footprint-ci unzip parsing', () => {
   it('parses unzip -l output that uses YYYY-MM-DD dates', () => {
@@ -15,7 +15,7 @@ describe('footprint-ci unzip parsing', () => {
       '',
     ].join('\n');
 
-    const entries = parseUnzipList(stdout);
+    const entries = parseVsixUnzipList(stdout);
     expect(entries).toEqual([
       { uncompressedBytes: 5397, path: 'extension/package.json' },
       { uncompressedBytes: 1280748, path: 'extension/dist/extension.js' },
@@ -23,18 +23,18 @@ describe('footprint-ci unzip parsing', () => {
   });
 
   it('rejects empty parsed entries to avoid fail-open checks', () => {
-    expect(() => validateParsedVsixEntries([])).toThrow(/Could not parse VSIX entries/);
+    expect(() => validateVsixEntries([])).toThrow(/Could not parse VSIX entries/);
   });
 
   it('rejects parsed entries that miss required release files', () => {
     expect(() =>
-      validateParsedVsixEntries([{ uncompressedBytes: 5397, path: 'extension/package.json' }]),
+      validateVsixEntries([{ uncompressedBytes: 5397, path: 'extension/package.json' }]),
     ).toThrow(/missing required release files/);
   });
 
   it('accepts parsed entries that include required release files', () => {
     expect(() =>
-      validateParsedVsixEntries([
+      validateVsixEntries([
         { uncompressedBytes: 5397, path: 'extension/package.json' },
         { uncompressedBytes: 1280748, path: 'extension/dist/extension.js' },
       ]),

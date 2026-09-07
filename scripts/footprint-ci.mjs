@@ -25,10 +25,13 @@ async function main() {
   const packageCmd = ['--yes', `@vscode/vsce@${VSCE_VERSION}`, 'package', '--no-dependencies', '--out', vsixPath];
   run('npx', packageCmd);
 
+  const archiveModule = await loadTsModule(path.resolve(repoRoot, 'src/core/vsixArchive.ts'));
+  const gateModule = await loadTsModule(path.resolve(repoRoot, 'src/core/footprintGate.ts'));
+
   const vsixStat = await stat(vsixPath);
   const unzipListOutput = run('unzip', ['-l', vsixPath]);
-  const vsixEntries = parseUnzipList(unzipListOutput);
-  validateParsedVsixEntries(vsixEntries);
+  const vsixEntries = archiveModule.parseVsixUnzipList(unzipListOutput);
+  archiveModule.validateVsixEntries(vsixEntries);
 
   const packageJson = JSON.parse(await readFile(path.resolve(repoRoot, 'package.json'), 'utf8'));
   const directRuntimeDependencies = countDirectRuntimeDependencies(packageJson);
@@ -38,20 +41,21 @@ async function main() {
 
   const measurements = {
     compressedVsixBytes: vsixStat.size,
-    installedVsixContentBytes: sumEntryBytes(vsixEntries, (entry) => entry.path.startsWith('extension/')),
-    extensionJsBytes: sumEntryBytes(
+    installedVsixContentBytes: archiveModule.sumVsixEntryBytes(vsixEntries, (entry) =>
+      entry.path.startsWith('extension/'),
+    ),
+    extensionJsBytes: archiveModule.sumVsixEntryBytes(
       vsixEntries,
       (entry) => entry.path.startsWith('extension/') && entry.path.endsWith('.js'),
     ),
-    sourceMapsInReleaseBytes: sumEntryBytes(vsixEntries, (entry) => entry.path.endsWith('.map')),
+    sourceMapsInReleaseBytes: archiveModule.sumVsixEntryBytes(vsixEntries, (entry) => entry.path.endsWith('.map')),
     directRuntimeDependencies,
     productionDependencyNodes,
   };
 
   const baselineJson = JSON.parse(await readFile(baselinePath, 'utf8'));
-  const baseline = toBaselineMeasurements(baselineJson);
+  const baseline = toBaselineMeasurements(baselineJson, archiveModule);
 
-  const gateModule = await loadFootprintGateModule(path.resolve(repoRoot, 'src/core/footprintGate.ts'));
   const report = gateModule.evaluateFootprintBudgets({
     current: measurements,
     baseline,
@@ -129,7 +133,7 @@ function parseArgs(argv) {
   return args;
 }
 
-async function loadFootprintGateModule(tsPath) {
+async function loadTsModule(tsPath) {
   const source = await readFile(tsPath, 'utf8');
   const transformed = await transform(source, {
     loader: 'ts',
@@ -180,10 +184,10 @@ async function assertBuildArtifactExists(filePath) {
   }
 }
 
-function toBaselineMeasurements(baselineJson) {
+function toBaselineMeasurements(baselineJson, archiveModule) {
   const measurements = baselineJson?.measurements ?? {};
   const sourceMapsFromEntries = Array.isArray(baselineJson?.rawEvidence?.vsixEntries)
-    ? sumEntryBytes(baselineJson.rawEvidence.vsixEntries, (entry) =>
+    ? archiveModule.sumVsixEntryBytes(baselineJson.rawEvidence.vsixEntries, (entry) =>
         typeof entry.path === 'string' && entry.path.endsWith('.map'),
       )
     : null;
@@ -202,46 +206,6 @@ function toBaselineMeasurements(baselineJson) {
 
 function numberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-export function parseUnzipList(stdout) {
-  const entries = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = line.match(
-      /^\s*(\d+)\s+(?:\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}\s+(.+)$/,
-    );
-    if (!match) {
-      continue;
-    }
-    entries.push({
-      uncompressedBytes: Number(match[1]),
-      path: match[2].trim(),
-    });
-  }
-  return entries;
-}
-
-export function validateParsedVsixEntries(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    throw new Error('Could not parse VSIX entries from unzip output; refusing to evaluate footprint budgets.');
-  }
-
-  const hasPackageJson = entries.some((entry) => entry.path === 'extension/package.json');
-  const hasExtensionJs = entries.some(
-    (entry) => entry.path === 'extension/dist/extension.js' || entry.path.endsWith('/dist/extension.js'),
-  );
-
-  if (!hasPackageJson || !hasExtensionJs) {
-    throw new Error(
-      'Parsed VSIX entries are missing required release files (extension/package.json and extension/dist/extension.js); refusing fail-open budget evaluation.',
-    );
-  }
-}
-
-function sumEntryBytes(entries, predicate) {
-  return entries
-    .filter(predicate)
-    .reduce((total, entry) => total + Number(entry.uncompressedBytes ?? 0), 0);
 }
 
 function printSummary(report, outputPath) {
