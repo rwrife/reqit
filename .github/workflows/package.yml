@@ -25,14 +25,14 @@ jobs:
         if: steps.pkg.outputs.has_lock == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.11.0
           cache: npm
 
       - name: Setup Node.js (no cache)
         if: steps.pkg.outputs.has_lock != 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.11.0
 
       - name: Install dependencies
         if: steps.pkg.outputs.has_pkg == 'true'
@@ -48,20 +48,24 @@ jobs:
         if: steps.pkg.outputs.has_pkg == 'true'
         run: npm run build --if-present
 
-      - name: Install vsce
+      - name: Enforce footprint budgets
         if: steps.pkg.outputs.has_pkg == 'true'
-        run: npm i -g @vscode/vsce
+        run: npm run footprint:ci
 
-      - name: Package
-        if: steps.pkg.outputs.has_pkg == 'true'
-        run: vsce package --no-dependencies --out reqit.vsix
-
-      - name: Upload artifact
+      - name: Upload VSIX artifact
         if: steps.pkg.outputs.has_pkg == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: reqit-vsix
           path: reqit.vsix
+          if-no-files-found: error
+
+      - name: Upload footprint artifact
+        if: steps.pkg.outputs.has_pkg == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reqit-footprint
+          path: artifacts/footprint.json
           if-no-files-found: error
 
       - name: No package.json yet — skipping
