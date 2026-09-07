@@ -2,6 +2,8 @@
 
 **Status:** Normative ceilings; enforcement tracked by [#62](https://github.com/rwrife/reqit/issues/62)
 
+**Current automated gate:** `npm run footprint:ci` in `.github/workflows/package.yml` enforces VSIX size, installed payload size, extension JS size, release source-map exclusion, and runtime dependency-count ceilings/regression checks. Startup/memory/indexing harnesses remain pending in #62.
+
 **Established:** 2026-09-02
 
 **Related:** [ADR 0001](./adr/0001-local-first-postman-class-architecture.md), [foundation #54](https://github.com/rwrife/reqit/issues/54)
