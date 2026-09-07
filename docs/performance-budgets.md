@@ -2,7 +2,7 @@
 
 **Status:** Normative ceilings; enforcement tracked by [#62](https://github.com/rwrife/reqit/issues/62)
 
-**Current automated gate:** `npm run footprint:ci` in `.github/workflows/package.yml` enforces VSIX size, installed payload size, extension JS size, release source-map exclusion, and runtime dependency-count ceilings/regression checks. Startup/memory/indexing harnesses remain pending in #62.
+**Current automated gate:** `npm run footprint:ci` in `.github/workflows/package.yml` enforces VSIX size, installed payload size, extension JS size, release source-map exclusion, and runtime dependency-count ceilings/regression checks. Relative baseline regressions are applied only when Node/npm fingerprints match the checked-in baseline; otherwise the gate still enforces hard ceilings and records measurements. Startup/memory/indexing harnesses remain pending in #62.
 
 **Established:** 2026-09-02
 

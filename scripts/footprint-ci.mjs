@@ -53,8 +53,21 @@ async function main() {
     productionDependencyNodes,
   };
 
+  const npmVersion = run('npm', ['--version']).trim();
   const baselineJson = JSON.parse(await readFile(baselinePath, 'utf8'));
-  const baseline = toBaselineMeasurements(baselineJson, archiveModule);
+  const baselineEnvironment = baselineJson?.environment ?? {};
+  const currentNodeVersion = process.version.replace(/^v/, '');
+  const baselineComparisonEligible =
+    baselineEnvironment.nodeVersion === currentNodeVersion && baselineEnvironment.npmVersion === npmVersion;
+  const baseline = baselineComparisonEligible
+    ? toBaselineMeasurements(baselineJson, archiveModule)
+    : unmeasuredBaseline();
+
+  if (!baselineComparisonEligible) {
+    console.warn(
+      `baseline regression comparison disabled: current node/npm ${currentNodeVersion}/${npmVersion} differs from baseline ${String(baselineEnvironment.nodeVersion ?? 'unknown')}/${String(baselineEnvironment.npmVersion ?? 'unknown')}`,
+    );
+  }
 
   const report = gateModule.evaluateFootprintBudgets({
     current: measurements,
@@ -81,7 +94,7 @@ async function main() {
       os: process.platform,
       architecture: process.arch,
       nodeVersion: process.version,
-      npmVersion: run('npm', ['--version']).trim(),
+      npmVersion,
       vsceVersion: VSCE_VERSION,
     },
     commands: [
@@ -93,6 +106,11 @@ async function main() {
     baseline: {
       path: path.relative(repoRoot, baselinePath),
       commit: baselineJson?.source?.commit ?? null,
+      comparisonEligible: baselineComparisonEligible,
+      baselineNodeVersion: baselineEnvironment.nodeVersion ?? null,
+      baselineNpmVersion: baselineEnvironment.npmVersion ?? null,
+      currentNodeVersion,
+      currentNpmVersion: npmVersion,
     },
     measurements,
     budgets: gateModule.DEFAULT_FOOTPRINT_BUDGETS,
@@ -201,6 +219,17 @@ function toBaselineMeasurements(baselineJson, archiveModule) {
       (measurements.vsixContainsSourceMap === false ? 0 : numberOrNull(measurements.extensionSourceMapBytes)),
     directRuntimeDependencies: numberOrNull(measurements.directRuntimeDependencies),
     productionDependencyNodes: numberOrNull(measurements.productionDependencyNodesExcludingRoot),
+  };
+}
+
+function unmeasuredBaseline() {
+  return {
+    compressedVsixBytes: null,
+    installedVsixContentBytes: null,
+    extensionJsBytes: null,
+    sourceMapsInReleaseBytes: null,
+    directRuntimeDependencies: null,
+    productionDependencyNodes: null,
   };
 }
 
