@@ -266,9 +266,15 @@ captured event transcript and offers **Save transcript**; you can also run
 `Reqit: Save Last SSE Transcript` from the command palette to write
 `.sse.jsonl` into `.requests/.history/` (or another path you choose). Closing the
 panel still does not abort the socket; that known #55 cancellation gap is documented
-in the threat model. Reconnect + `Last-Event-ID` retry and a dedicated “Stop stream”
-button remain tracked in [#46](https://github.com/rwrife/reqit/issues/46) and land in
-follow-ups.
+in the threat model. Reconnect + `Last-Event-ID` retry landed in
+[#68](https://github.com/rwrife/reqit/pull/68). A dedicated **Stop stream** action
+(`Reqit: Stop SSE Stream`) aborts every live session through a pure
+`SseStreamRegistry` (`src/core/sse/streamControl.ts`): the transport races the
+next-chunk wait against the stop signal, so a stalled connection returns
+`aborted` promptly, late chunks can never dispatch late events, in-flight and
+reconnect sockets are destroyed, and live sessions are also aborted on
+deactivation. Remaining #46 polish is tracked in
+[#46](https://github.com/rwrife/reqit/issues/46).
 
 ## Develop
 

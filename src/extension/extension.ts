@@ -11,10 +11,12 @@ import {
 } from './responseView.js';
 import {
   buildSseTranscriptFileName,
+  closeOnAbort,
   isSseResponse,
   runSseTransportWithReconnect,
   serializeSseTranscript,
   sseOptionsFromDirectives,
+  SseStreamRegistry,
   type SseTranscriptRecord,
 } from '../core/sse/index.js';
 import { requestToCurl } from '../core/curl.js';
@@ -33,6 +35,18 @@ interface LastSseTranscript {
 }
 
 let lastSseTranscript: LastSseTranscript | undefined;
+
+/**
+ * Live SSE sessions owned by this extension host. The `Stop stream`
+ * command aborts every session here; each session deregisters itself when
+ * its driver finishes naturally.
+ */
+const sseStreams = new SseStreamRegistry();
+
+/** Stop all live SSE streams. Returns how many streams were stopped. */
+function stopSseStreams(): number {
+  return sseStreams.stopActive();
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
@@ -78,6 +92,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),
+    vscode.commands.registerCommand('reqit.stopSseStream', async () => {
+      const stopped = stopSseStreams();
+      if (stopped === 0) {
+        void vscode.window.showInformationMessage('Reqit: no active SSE stream to stop.');
+        return;
+      }
+      void vscode.window.showInformationMessage(
+        `Reqit: stopped ${stopped} SSE stream${stopped === 1 ? '' : 's'}.`,
+      );
+    }),
     vscode.commands.registerCommand(
       'reqit.copyAsCurl',
       async (arg?: { documentUri: string; requestLineIndex: number; revealSecrets?: boolean }) => {
@@ -190,7 +214,8 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // no-op
+  // Abort every live SSE session so no stream outlives the host.
+  sseStreams.abortAll();
 }
 
 class HttpCodeLensProvider implements vscode.CodeLensProvider {
@@ -388,8 +413,27 @@ async function streamSseResponse(
     ...(initialNote !== undefined ? { note: initialNote } : {}),
   };
   const handle = renderSseResponse(context, state);
-  const abort = new AbortController();
-  context.subscriptions.push({ dispose: () => abort.abort() });
+  const stream = sseStreams.start();
+
+  /**
+   * Destroy the live HTTP body when the user stops the stream (or the
+   * extension deactivates), so the socket is released immediately instead
+   * of lingering until the server closes it. Rejections from a destroyed
+   * body are absorbed by the transport's abort race in `runSseTransport`.
+   */
+  const destroyBodyOnStop = (body: { destroy?: () => void } | AsyncIterable<unknown>): void => {
+    const destroyable = body as { destroy?: () => void };
+    if (typeof destroyable.destroy === 'function') {
+      try {
+        destroyable.destroy();
+      } catch {
+        // Body already gone — nothing to release.
+      }
+    }
+  };
+  closeOnAbort(stream.signal, () => {
+    destroyBodyOnStop(res.body);
+  });
 
   const decodeBody = (
     body: AsyncIterable<Uint8Array | string>,
@@ -437,9 +481,12 @@ async function streamSseResponse(
           Array.isArray(v) ? v.join(', ') : String(v ?? ''),
         ]),
       );
+      closeOnAbort(stream.signal, () => {
+        destroyBodyOnStop(reconnectResponse.body);
+      });
       return decodeBody(reconnectResponse.body.setEncoding('utf8'));
     },
-    signal: abort.signal,
+    signal: stream.signal,
     onEvent: (event, meta) => {
       const eventTimestampMs = Date.now();
       events.push({ event, meta, timestamp: new Date(eventTimestampMs).toISOString() });
@@ -505,5 +552,10 @@ async function streamSseResponse(
       note: `SSE transport failed: ${message}`,
     });
     vscode.window.showErrorMessage(`Reqit: SSE stream failed \u2014 ${message}`);
+  } finally {
+    // Driver finished (naturally, stopped, or failed): deregister so a
+    // later `Stop stream` never targets a dead session. Idempotent and
+    // never aborts, so the transcript above is unaffected.
+    stream.release();
   }
 }

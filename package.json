@@ -147,6 +147,11 @@
         "category": "Reqit"
       },
       {
+        "command": "reqit.stopSseStream",
+        "title": "Reqit: Stop SSE Stream",
+        "category": "Reqit"
+      },
+      {
         "command": "reqit.setSecret",
         "title": "Reqit: Set Secret",
         "category": "Reqit"

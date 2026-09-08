@@ -159,6 +159,46 @@ export const SseTransportUserOptionsSchema = z
 export type SseTransportUserOptions = z.infer<typeof SseTransportUserOptionsSchema>;
 
 /**
+ * Race a pending iterator step against an AbortSignal so a stalled
+ * connection (no chunks arriving) can still be cancelled. When the signal
+ * aborts first, the pending step is abandoned and never dispatched —
+ * late chunks cannot produce late events.
+ */
+const SSE_ABORTED_STEP = Symbol('sse-aborted-step');
+
+async function nextChunkOrAbort(
+  iterator: AsyncIterator<string>,
+  signal?: AbortSignal,
+): Promise<IteratorResult<string> | typeof SSE_ABORTED_STEP> {
+  if (!signal) return iterator.next();
+  if (signal.aborted) return SSE_ABORTED_STEP;
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      resolve(SSE_ABORTED_STEP);
+    };
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    iterator.next().then(
+      (step) => {
+        cleanup();
+        resolve(step);
+      },
+      (err) => {
+        cleanup();
+        // Genuine iterator failures propagate like `for await` would.
+        // After an abort the promise is already settled, so a rejection
+        // from a caller-destroyed body is absorbed here instead of
+        // surfacing as an unhandled rejection.
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
  * Drive an SSE stream to completion (or to the first stop condition).
  *
  * @returns A {@link SseTransportResult} describing why the driver stopped
@@ -174,6 +214,7 @@ export async function runSseTransport(
     retryMs: undefined,
   };
   const parser = new SseParser();
+  const inputIterator = options.input[Symbol.asyncIterator]();
   const gate = options.until ? new SseUntilGate(options.until, { now }) : undefined;
 
   let eventCount = 0;
@@ -224,12 +265,20 @@ export async function runSseTransport(
     return undefined;
   };
 
-  outer: for await (const chunk of options.input) {
+  outer: for (;;) {
     if (options.signal?.aborted) {
       stopReason = 'aborted';
       break;
     }
-    parser.push(chunk);
+    const step = await nextChunkOrAbort(inputIterator, options.signal);
+    if (step === SSE_ABORTED_STEP) {
+      // The user stopped the stream while we were parked waiting for the
+      // next chunk; any late-arriving chunk is intentionally abandoned.
+      stopReason = 'aborted';
+      break outer;
+    }
+    if (step.done) break;
+    parser.push(step.value);
     const reason = await flushDispatched();
     if (reason) {
       stopReason = reason;

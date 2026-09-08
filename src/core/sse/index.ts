@@ -42,3 +42,8 @@ export {
   serializeSseTranscript,
   type SseTranscriptRecord,
 } from './transcript.js';
+export {
+  SseStreamRegistry,
+  closeOnAbort,
+  type SseStreamHandle,
+} from './streamControl.js';
