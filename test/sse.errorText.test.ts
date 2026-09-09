@@ -41,11 +41,18 @@ describe('sanitizeSseErrorText', () => {
 
   it('strips credentials/query from backslash-separated URLs (fetch-style errors)', () => {
     const out = sanitizeSseErrorText(
-      'fetch failed https:\\\\user:***@host.example.com/path?token=***',
+      "fetch failed https:\\\\user:***@host.example.com/path?token=tok-json-secret#frag",
     );
     expect(out).not.toContain('hunter2');
-    expect(out).not.toContain('tok-json');
+    expect(out).not.toContain('tok-json-secret');
+    expect(out).not.toContain('user:');
     expect(out).toContain('host.example.com');
+  });
+
+  it('caps at an explicit raised maxLength and marks truncation exactly', () => {
+    const out = sanitizeSseErrorText('y'.repeat(5000), 4000);
+    expect(out.length).toBe(4000);
+    expect(out.endsWith('…')).toBe(true);
   });
 
   it('redacts JSON-style quoted secret assignments', () => {

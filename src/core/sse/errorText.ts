@@ -23,11 +23,14 @@ export const SSE_ERROR_TEXT_MAX = 300;
 const SECRET_ASSIGNMENT =
   /\b(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|access[-_]?token|token|secret|password|passwd)\b['"]?(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|Digest\s+\S+|[^\s,;}]+)/gi;
 
-const URL_IN_TEXT = /https?:\/\/[^\s"'<>]+/gi;
+// Fetch/undici errors sometimes render URLs with backslash separators
+// (WHATWG treats `\\` as `//` for special schemes), so both forms match
+// and are normalized before parsing.
+const URL_IN_TEXT = /https?:[\\/][\\/][^\s"'<>]+/gi;
 
 function sanitizeUrl(raw: string): string {
   try {
-    const parsed = new URL(raw);
+    const parsed = new URL(raw.replace(/\\/g, '/'));
     // `origin` drops any embedded userinfo; pathname drops query/fragment.
     return `${parsed.origin}${parsed.pathname}`;
   } catch {

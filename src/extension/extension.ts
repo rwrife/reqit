@@ -342,10 +342,8 @@ async function runRequest(
   const started = Date.now();
   // Register the session BEFORE the first byte arrives so `Stop stream`
   // can also cancel a request hanging on response headers (the SSE stop
-  // acceptance path must reach every live lifecycle state). For non-SSE
-  // responses the handle is released as soon as the response is known.
+  // acceptance path must reach every live lifecycle state).
   const stream = sseStreams.start();
-  let handedOff = false;
   try {
     const res = await request(opts.url, {
       method: opts.method,
@@ -357,7 +355,6 @@ async function runRequest(
       Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
     );
     if (isSseResponse(res.headers)) {
-      handedOff = true;
       await streamSseResponse(context, req, opts, res, responseHeaders, started, stream);
       return;
     }
@@ -388,11 +385,12 @@ async function runRequest(
       elapsedMs,
     });
   } finally {
-    if (!handedOff) {
-      // Non-SSE (or failed) request: deregister so a later `Stop stream`
-      // never reports or touches a dead session.
-      stream.release();
-    }
+    // Deregister unconditionally: `release()` is idempotent and never
+    // aborts, so this covers non-SSE responses, request failures, AND a
+    // throw inside streamSseResponse's setup before its own finally is
+    // reached. By the time this runs the SSE driver has settled (or its
+    // setup threw), so no live session is deregistered early.
+    stream.release();
   }
 }
 

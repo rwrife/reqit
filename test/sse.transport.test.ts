@@ -394,6 +394,93 @@ describe('runSseTransportWithReconnect', () => {
     expect(result.attempts).toBe(1);
   });
 
+  it('cancels a PARKED reconnect connect and closes its late result', async () => {
+    // Genuinely-parked race: abort fires only AFTER the driver is
+    // awaiting connect(), and the connect resolves LATER with a tracked
+    // input that must be closed without ever being driven.
+    const controller = new AbortController();
+    let lateClosed = 0;
+    let resolveConnect: ((v: AsyncIterable<string>) => void) | undefined;
+    const lateInput: AsyncIterable<string> = {
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        const chunks = ['data: late\n\n'];
+        return {
+          next: async (): Promise<IteratorResult<string>> =>
+            i < chunks.length
+              ? { value: chunks[i++], done: false }
+              : { value: undefined as unknown as string, done: true },
+          // Spy: the driver's late-result suppression must invoke this
+          // (undici bodies expose `destroy`; async-iterable wrappers
+          // expose `return`).
+          return: async (): Promise<IteratorResult<string>> => {
+            lateClosed += 1;
+            return { value: undefined as unknown as string, done: true };
+          },
+        };
+      },
+    };
+    let seen = 0;
+    const running = runSseTransportWithReconnect({
+      maxReconnects: 5,
+      signal: controller.signal,
+      connect: async ({ attempt }) => {
+        if (attempt === 0) return iter(['data: a\n\n']);
+        return new Promise<AsyncIterable<string>>((resolve) => {
+          resolveConnect = resolve;
+        });
+      },
+      onEvent: () => {
+        seen += 1;
+      },
+      sleep: async () => {},
+    });
+    // Give the driver time to park inside connect().
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolveConnect).toBeDefined();
+    controller.abort();
+    const result = await running;
+    expect(result.reason).toBe('aborted');
+    expect(seen).toBe(1);
+    // Late connect resolves after the stop with a live input; the
+    // driver's suppression must close it (exactly once) and never
+    // dispatch its events.
+    resolveConnect!(lateInput);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lateClosed).toBe(1);
+    expect(seen).toBe(1);
+  });
+
+  it('cancels a PARKED backoff sleep and suppresses its late rejection', async () => {
+    const controller = new AbortController();
+    let rejectSleep: ((err: unknown) => void) | undefined;
+    let attempts = 0;
+    const running = runSseTransportWithReconnect({
+      maxReconnects: 5,
+      signal: controller.signal,
+      connect: async ({ attempt }) => {
+        attempts = attempt + 1;
+        return iter(attempt === 0 ? ['data: a\n\n'] : ['data: never\n\n']);
+      },
+      onEvent: () => {},
+      sleep: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSleep = reject;
+        }),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rejectSleep).toBeDefined();
+    controller.abort();
+    const result = await running;
+    expect(result.reason).toBe('aborted');
+    // The parked sleep rejects AFTER the stop: the rejection must be
+    // absorbed (no unhandled rejection crash) and must not trigger a
+    // new connect attempt.
+    rejectSleep!(new Error('late sleep failure'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(attempts).toBe(1);
+  });
+
   it('does not reconnect when the first run stops for a non-end-of-stream reason', async () => {
     const attempts: number[] = [];
     const result = await runSseTransportWithReconnect({
