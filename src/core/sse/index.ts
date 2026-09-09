@@ -42,3 +42,12 @@ export {
   serializeSseTranscript,
   type SseTranscriptRecord,
 } from './transcript.js';
+export {
+  SseStreamRegistry,
+  closeOnAbort,
+  type SseStreamHandle,
+} from './streamControl.js';
+export {
+  sanitizeSseErrorText,
+  SSE_ERROR_TEXT_MAX,
+} from './errorText.js';

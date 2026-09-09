@@ -11,10 +11,14 @@ import {
 } from './responseView.js';
 import {
   buildSseTranscriptFileName,
+  closeOnAbort,
   isSseResponse,
   runSseTransportWithReconnect,
+  sanitizeSseErrorText,
   serializeSseTranscript,
   sseOptionsFromDirectives,
+  SseStreamRegistry,
+  type SseStreamHandle,
   type SseTranscriptRecord,
 } from '../core/sse/index.js';
 import { requestToCurl } from '../core/curl.js';
@@ -33,6 +37,18 @@ interface LastSseTranscript {
 }
 
 let lastSseTranscript: LastSseTranscript | undefined;
+
+/**
+ * Live SSE sessions owned by this extension host. The `Stop stream`
+ * command aborts every session here; each session deregisters itself when
+ * its driver finishes naturally.
+ */
+const sseStreams = new SseStreamRegistry();
+
+/** Stop all live SSE streams. Returns how many streams were stopped. */
+function stopSseStreams(): number {
+  return sseStreams.stopActive();
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const treeProvider = new RequestsTreeProvider();
@@ -78,6 +94,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),
+    vscode.commands.registerCommand('reqit.stopSseStream', async () => {
+      const stopped = stopSseStreams();
+      if (stopped === 0) {
+        void vscode.window.showInformationMessage('Reqit: no active SSE stream to stop.');
+        return;
+      }
+      void vscode.window.showInformationMessage(
+        `Reqit: stopped ${stopped} SSE stream${stopped === 1 ? '' : 's'}.`,
+      );
+    }),
     vscode.commands.registerCommand(
       'reqit.copyAsCurl',
       async (arg?: { documentUri: string; requestLineIndex: number; revealSecrets?: boolean }) => {
@@ -190,7 +216,8 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // no-op
+  // Abort every live SSE session so no stream outlives the host.
+  sseStreams.abortAll();
 }
 
 class HttpCodeLensProvider implements vscode.CodeLensProvider {
@@ -313,17 +340,22 @@ async function runRequest(
   // Dynamic import — keeps activation cheap and avoids bundling undici into the activation path.
   const { request } = await import('undici');
   const started = Date.now();
+  // Register the session BEFORE the first byte arrives so `Stop stream`
+  // can also cancel a request hanging on response headers (the SSE stop
+  // acceptance path must reach every live lifecycle state).
+  const stream = sseStreams.start();
   try {
     const res = await request(opts.url, {
       method: opts.method,
       headers: opts.headers,
       body: opts.body,
+      signal: stream.signal,
     });
     const responseHeaders: Record<string, string> = Object.fromEntries(
       Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
     );
     if (isSseResponse(res.headers)) {
-      await streamSseResponse(context, req, opts, res, responseHeaders, started);
+      await streamSseResponse(context, req, opts, res, responseHeaders, started, stream);
       return;
     }
     const bodyText = await res.body.text();
@@ -337,14 +369,28 @@ async function runRequest(
     });
   } catch (err) {
     const elapsedMs = Date.now() - started;
-    vscode.window.showErrorMessage(`Reqit: request failed — ${(err as Error).message}`);
+    if (stream.signal.aborted) {
+      // The user stopped this request while it was waiting for response
+      // headers: `Stop stream` already reported it; don't double-report
+      // a deliberate cancellation as a transport failure.
+      return;
+    }
+    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
+    vscode.window.showErrorMessage(`Reqit: request failed — ${message}`);
     renderResponse(context, {
       request: opts,
       status: 0,
       headers: {},
-      body: `// Error after ${elapsedMs}ms\n${(err as Error).stack ?? (err as Error).message}`,
+      body: `// Error after ${elapsedMs}ms\n${sanitizeSseErrorText((err as Error).stack ?? (err as Error).message, 4000)}`,
       elapsedMs,
     });
+  } finally {
+    // Deregister unconditionally: `release()` is idempotent and never
+    // aborts, so this covers non-SSE responses, request failures, AND a
+    // throw inside streamSseResponse's setup before its own finally is
+    // reached. By the time this runs the SSE driver has settled (or its
+    // setup threw), so no live session is deregistered early.
+    stream.release();
   }
 }
 
@@ -369,6 +415,7 @@ async function streamSseResponse(
   res: { statusCode: number; body: AsyncIterable<unknown> },
   responseHeaders: Record<string, string>,
   _started: number,
+  stream: SseStreamHandle,
 ): Promise<void> {
   const requestForView = opts;
   const directives = sseOptionsFromDirectives(req.directives);
@@ -388,8 +435,29 @@ async function streamSseResponse(
     ...(initialNote !== undefined ? { note: initialNote } : {}),
   };
   const handle = renderSseResponse(context, state);
-  const abort = new AbortController();
-  context.subscriptions.push({ dispose: () => abort.abort() });
+  // The registry handle is created by the caller (before the first byte)
+  // and owned here until the driver settles; `stream.release()` below is
+  // the single deregistration point for the SSE path.
+
+  /**
+   * Destroy the live HTTP body when the user stops the stream (or the
+   * extension deactivates), so the socket is released immediately instead
+   * of lingering until the server closes it. Rejections from a destroyed
+   * body are absorbed by the transport's abort race in `runSseTransport`.
+   */
+  const destroyBodyOnStop = (body: { destroy?: () => void } | AsyncIterable<unknown>): void => {
+    const destroyable = body as { destroy?: () => void };
+    if (typeof destroyable.destroy === 'function') {
+      try {
+        destroyable.destroy();
+      } catch {
+        // Body already gone — nothing to release.
+      }
+    }
+  };
+  closeOnAbort(stream.signal, () => {
+    destroyBodyOnStop(res.body);
+  });
 
   const decodeBody = (
     body: AsyncIterable<Uint8Array | string>,
@@ -422,6 +490,10 @@ async function streamSseResponse(
           ...headers,
         },
         body: opts.body,
+        // Bind the reconnect request to the stream's stop signal so a
+        // "Stop stream" during connect() cancels the in-flight socket
+        // instead of resolving later with an orphaned body.
+        signal: stream.signal,
       });
       if (!isSseResponse(reconnectResponse.headers as Record<string, string | string[] | undefined>)) {
         const contentType = reconnectResponse.headers['content-type'];
@@ -437,9 +509,12 @@ async function streamSseResponse(
           Array.isArray(v) ? v.join(', ') : String(v ?? ''),
         ]),
       );
+      closeOnAbort(stream.signal, () => {
+        destroyBodyOnStop(reconnectResponse.body);
+      });
       return decodeBody(reconnectResponse.body.setEncoding('utf8'));
     },
-    signal: abort.signal,
+    signal: stream.signal,
     onEvent: (event, meta) => {
       const eventTimestampMs = Date.now();
       events.push({ event, meta, timestamp: new Date(eventTimestampMs).toISOString() });
@@ -477,6 +552,11 @@ async function streamSseResponse(
     });
 
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
+    // The driver has finished: deregister BEFORE awaiting any follow-up
+    // prompt, so `Stop stream` can never report or touch this dead
+    // session while the user decides on the transcript save. (release()
+    // is idempotent; the finally below stays as a failure-path net.)
+    stream.release();
     if (lastSseTranscript !== undefined) {
       const transcript = lastSseTranscript;
       const action = await vscode.window.showInformationMessage(
@@ -495,7 +575,7 @@ async function streamSseResponse(
       }
     }
   } catch (err) {
-    const message = (err as Error).message ?? String(err);
+    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
     handle.update({
       ...state,
@@ -505,5 +585,10 @@ async function streamSseResponse(
       note: `SSE transport failed: ${message}`,
     });
     vscode.window.showErrorMessage(`Reqit: SSE stream failed \u2014 ${message}`);
+  } finally {
+    // Driver finished (naturally, stopped, or failed): deregister so a
+    // later `Stop stream` never targets a dead session. Idempotent and
+    // never aborts, so the transcript above is unaffected.
+    stream.release();
   }
 }
