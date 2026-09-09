@@ -47,3 +47,7 @@ export {
   closeOnAbort,
   type SseStreamHandle,
 } from './streamControl.js';
+export {
+  sanitizeSseErrorText,
+  SSE_ERROR_TEXT_MAX,
+} from './errorText.js';

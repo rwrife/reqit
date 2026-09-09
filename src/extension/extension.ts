@@ -14,6 +14,7 @@ import {
   closeOnAbort,
   isSseResponse,
   runSseTransportWithReconnect,
+  sanitizeSseErrorText,
   serializeSseTranscript,
   sseOptionsFromDirectives,
   SseStreamRegistry,
@@ -466,6 +467,10 @@ async function streamSseResponse(
           ...headers,
         },
         body: opts.body,
+        // Bind the reconnect request to the stream's stop signal so a
+        // "Stop stream" during connect() cancels the in-flight socket
+        // instead of resolving later with an orphaned body.
+        signal: stream.signal,
       });
       if (!isSseResponse(reconnectResponse.headers as Record<string, string | string[] | undefined>)) {
         const contentType = reconnectResponse.headers['content-type'];
@@ -542,7 +547,7 @@ async function streamSseResponse(
       }
     }
   } catch (err) {
-    const message = (err as Error).message ?? String(err);
+    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
     handle.update({
       ...state,

@@ -229,6 +229,73 @@ describe('runSseTransport — stop conditions', () => {
   });
 });
 
+describe('runSseTransport — iterator cleanup', () => {
+  /** Iterable that records next()/return() calls. */
+  function trackedIter(chunks: string[]): AsyncIterable<string> & {
+    closed: boolean;
+  } {
+    const state = { closed: false };
+    return Object.assign(state, {
+      async *[Symbol.asyncIterator]() {
+        try {
+          for (const c of chunks) yield c;
+        } finally {
+          state.closed = true;
+        }
+      },
+    });
+  }
+
+  it('closes the input iterator when stopped by maxEvents', async () => {
+    const input = trackedIter(['data: a\n\n', 'data: b\n\n', 'data: c\n\n']);
+    const result = await runSseTransport({
+      input,
+      onEvent: () => {},
+      maxEvents: 1,
+    });
+    expect(result.reason).toBe('max-events');
+    expect(input.closed).toBe(true);
+  });
+
+  it('closes the input iterator when stopped by abort', async () => {
+    const controller = new AbortController();
+    const input = trackedIter(['data: a\n\n', 'data: b\n\n']);
+    const result = await runSseTransport({
+      input,
+      onEvent: () => {
+        controller.abort();
+      },
+      signal: controller.signal,
+    });
+    expect(result.reason).toBe('aborted');
+    expect(input.closed).toBe(true);
+  });
+
+  it('closes the input iterator when stopped by until-match', async () => {
+    const input = trackedIter(['data: a\n\n', 'data: stop\n\n', 'data: c\n\n']);
+    const result = await runSseTransport({
+      input,
+      onEvent: () => {},
+      until: 'event.data === "stop"',
+    });
+    expect(result.reason).toBe('until-matched');
+    expect(input.closed).toBe(true);
+  });
+
+  it('closes the input iterator when the event callback throws', async () => {
+    const input = trackedIter(['data: a\n\n', 'data: b\n\n']);
+    await expect(
+      runSseTransport({
+        input,
+        onEvent: () => {
+          throw new Error('boom');
+        },
+      }),
+    ).rejects.toThrow('boom');
+    expect(input.closed).toBe(true);
+  });
+});
+
 describe('runSseTransportWithReconnect', () => {
   it('reconnects with Last-Event-ID and returns reconnect-limit when budget is exhausted', async () => {
     const seenHeaders: string[] = [];
@@ -257,6 +324,48 @@ describe('runSseTransportWithReconnect', () => {
     expect(result.reconnect.lastEventId).toBe('two');
     expect(result.reconnectCount).toBe(1);
     expect(result.attempts).toBe(2);
+  });
+
+  it('aborts while parked in reconnect backoff without waiting for the sleep', async () => {
+    const controller = new AbortController();
+    let sleepStarted = false;
+    const neverResolve = new Promise<void>(() => {});
+    const result = await runSseTransportWithReconnect({
+      maxReconnects: 5,
+      signal: controller.signal,
+      connect: async ({ attempt }) => {
+        // First connection ends the stream cleanly so the loop enters backoff.
+        return iter(attempt === 0 ? ['data: a\n\n'] : []);
+      },
+      onEvent: () => {},
+      sleep: () => {
+        sleepStarted = true;
+        // Abort while the driver is parked in backoff.
+        controller.abort();
+        return neverResolve;
+      },
+    });
+    expect(sleepStarted).toBe(true);
+    expect(result.reason).toBe('aborted');
+  });
+
+  it('aborts while a reconnect connect() is still in flight', async () => {
+    const controller = new AbortController();
+    const connectPromise = new Promise<AsyncIterable<string>>(() => {});
+    const result = await runSseTransportWithReconnect({
+      maxReconnects: 5,
+      signal: controller.signal,
+      connect: async ({ attempt }) => {
+        if (attempt === 0) return iter(['data: a\n\n']);
+        // Second connect never resolves; abort fires while it is pending.
+        controller.abort();
+        return connectPromise;
+      },
+      onEvent: () => {},
+      sleep: async () => {},
+    });
+    expect(result.reason).toBe('aborted');
+    expect(result.attempts).toBe(1);
   });
 
   it('does not reconnect when the first run stops for a non-end-of-stream reason', async () => {

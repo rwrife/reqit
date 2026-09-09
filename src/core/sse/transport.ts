@@ -159,6 +159,91 @@ export const SseTransportUserOptionsSchema = z
 export type SseTransportUserOptions = z.infer<typeof SseTransportUserOptionsSchema>;
 
 /**
+ * Race a backoff sleep against an AbortSignal so a parked reconnect wait
+ * resolves immediately when the user stops the stream, instead of keeping
+ * the driver (and the "streaming" UI state) alive for the full delay.
+ */
+const SSE_ABORTED_SLEEP = Symbol('sse-aborted-sleep');
+
+async function sleepOrAbort(
+  sleepPromise: Promise<void>,
+  signal?: AbortSignal,
+): Promise<void | typeof SSE_ABORTED_SLEEP> {
+  if (!signal) return sleepPromise;
+  if (signal.aborted) return SSE_ABORTED_SLEEP;
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      resolve(SSE_ABORTED_SLEEP);
+    };
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    sleepPromise.then(
+      () => {
+        cleanup();
+        resolve(undefined);
+      },
+      (err) => {
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Race a reconnect connection attempt against an AbortSignal so a pending
+ * `connect()` cannot outlive a stop. When the signal aborts first, the
+ * late-resolving input is closed defensively by the caller and never
+ * driven, so a stopped stream cannot emit late events or surface a late
+ * connect error as a failure.
+ */
+const SSE_ABORTED_CONNECT = Symbol('sse-aborted-connect');
+
+async function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T | typeof SSE_ABORTED_CONNECT> {
+  if (!signal) return promise;
+  if (signal.aborted) return SSE_ABORTED_CONNECT;
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      resolve(SSE_ABORTED_CONNECT);
+    };
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Best-effort close of an async input that was abandoned after a stop
+ * (e.g. a reconnect body whose request resolved late). Never throws.
+ */
+async function closeLateInput(input: AsyncIterable<string>): Promise<void> {
+  try {
+    const it = input[Symbol.asyncIterator]?.();
+    await it?.return?.();
+  } catch {
+    // Resource already gone or close unsupported — nothing to release.
+  }
+}
+
+/**
  * Race a pending iterator step against an AbortSignal so a stalled
  * connection (no chunks arriving) can still be cancelled. When the signal
  * aborts first, the pending step is abandoned and never dispatched —
@@ -265,31 +350,44 @@ export async function runSseTransport(
     return undefined;
   };
 
-  outer: for (;;) {
-    if (options.signal?.aborted) {
-      stopReason = 'aborted';
-      break;
+  try {
+    outer: for (;;) {
+      if (options.signal?.aborted) {
+        stopReason = 'aborted';
+        break;
+      }
+      const step = await nextChunkOrAbort(inputIterator, options.signal);
+      if (step === SSE_ABORTED_STEP) {
+        // The user stopped the stream while we were parked waiting for the
+        // next chunk; any late-arriving chunk is intentionally abandoned.
+        stopReason = 'aborted';
+        break outer;
+      }
+      if (step.done) break;
+      parser.push(step.value);
+      const reason = await flushDispatched();
+      if (reason) {
+        stopReason = reason;
+        break outer;
+      }
     }
-    const step = await nextChunkOrAbort(inputIterator, options.signal);
-    if (step === SSE_ABORTED_STEP) {
-      // The user stopped the stream while we were parked waiting for the
-      // next chunk; any late-arriving chunk is intentionally abandoned.
-      stopReason = 'aborted';
-      break outer;
-    }
-    if (step.done) break;
-    parser.push(step.value);
-    const reason = await flushDispatched();
-    if (reason) {
-      stopReason = reason;
-      break outer;
-    }
-  }
 
-  if (stopReason === undefined) {
-    parser.end();
-    const reason = await flushDispatched();
-    stopReason = reason ?? (options.signal?.aborted ? 'aborted' : 'end-of-stream');
+    if (stopReason === undefined) {
+      parser.end();
+      const reason = await flushDispatched();
+      stopReason = reason ?? (options.signal?.aborted ? 'aborted' : 'end-of-stream');
+    }
+  } finally {
+    // Replicate `for await` iterator-close semantics: every early exit
+    // (abort, caps, until-match) and every thrown callback/parser error
+    // releases the underlying input (generator + HTTP body) so no socket
+    // or decoder outlives the driver. Cleanup errors never replace the
+    // primary error or stop reason.
+    try {
+      await inputIterator.return?.();
+    } catch {
+      // Cleanup failure never masks the primary outcome.
+    }
   }
 
   return {
@@ -323,11 +421,49 @@ export async function runSseTransportWithReconnect(
   let untilError: string | undefined;
 
   while (attempts <= maxReconnects) {
-    const input = await options.connect({
+    // Never start (or keep waiting on) a connection once stopped: check
+    // for a pre-aborted signal, and race an in-flight connect() against
+    // the signal so a hanging reconnect request cannot outlive the stop.
+    if (options.signal?.aborted) {
+      return {
+        reason: 'aborted',
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        reconnect,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+    const connectPromise = options.connect({
       attempt: attempts,
       reconnect,
       headers: reconnectHeaders(reconnect),
     });
+    const connectOutcome = await raceWithAbort(connectPromise, options.signal);
+    if (connectOutcome === SSE_ABORTED_CONNECT) {
+      // The reconnect request is still pending; the caller's adapter owns
+      // its cancellation (e.g. via the abort signal passed to undici).
+      // Suppress the late result instead of surfacing it as an error.
+      void connectPromise.then(
+        async (late) => {
+          await closeLateInput(late);
+        },
+        () => {
+          // Late connect failures after a stop are intentionally dropped.
+        },
+      );
+      return {
+        reason: 'aborted',
+        eventCount: totalEvents,
+        durationMs: now() - startedAt,
+        reconnect,
+        attempts,
+        reconnectCount,
+        ...(untilError !== undefined ? { untilError } : {}),
+      };
+    }
+    const input = connectOutcome;
     attempts += 1;
 
     const result = await runSseTransport({
@@ -384,7 +520,7 @@ export async function runSseTransportWithReconnect(
 
     reconnectCount += 1;
     const sleepMs = clampRetryMs(reconnect.retryMs);
-    await sleep(sleepMs);
+    await sleepOrAbort(sleep(sleepMs), options.signal);
     if (options.signal?.aborted) {
       return {
         ...result,
