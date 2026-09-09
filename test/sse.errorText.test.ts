@@ -38,4 +38,25 @@ describe('sanitizeSseErrorText', () => {
     expect(out).not.toContain('supersecretvalue');
     expect(out).toContain('Authorization');
   });
+
+  it('strips credentials/query from backslash-separated URLs (fetch-style errors)', () => {
+    const out = sanitizeSseErrorText(
+      'fetch failed https:\\\\user:***@host.example.com/path?token=***',
+    );
+    expect(out).not.toContain('hunter2');
+    expect(out).not.toContain('tok-json');
+    expect(out).toContain('host.example.com');
+  });
+
+  it('redacts JSON-style quoted secret assignments', () => {
+    const out = sanitizeSseErrorText('upstream rejected {"token":"json-secret-value"}');
+    expect(out).not.toContain('json-secret-value');
+  });
+
+  it('handles mixed-case schemes and fragments', () => {
+    const out = sanitizeSseErrorText('HTTP://User:PaSS@Sub.Ex.Com:8080/a/b?x=1#frag');
+    expect(out.toLowerCase()).not.toContain('pass');
+    expect(out.toLowerCase()).not.toContain('x=1');
+    expect(out).not.toContain('#frag');
+  });
 });

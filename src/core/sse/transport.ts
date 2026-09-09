@@ -170,7 +170,13 @@ async function sleepOrAbort(
   signal?: AbortSignal,
 ): Promise<void | typeof SSE_ABORTED_SLEEP> {
   if (!signal) return sleepPromise;
-  if (signal.aborted) return SSE_ABORTED_SLEEP;
+  if (signal.aborted) {
+    // The sleep promise was already constructed by the caller; keep its
+    // rejection observed (e.g. an injected sleep that rejects synchronously
+    // while aborting) instead of surfacing an unhandled rejection.
+    sleepPromise.catch(() => {});
+    return SSE_ABORTED_SLEEP;
+  }
   return new Promise((resolve, reject) => {
     const onAbort = (): void => {
       cleanup();
@@ -305,6 +311,7 @@ export async function runSseTransport(
   let eventCount = 0;
   let lastEventAt = startedAt;
   let stopReason: SseStopReason | undefined;
+  let exhaustedNormally = false;
 
   // (Time caps are enforced inside flushDispatched between events.)
   void 0;
@@ -363,7 +370,10 @@ export async function runSseTransport(
         stopReason = 'aborted';
         break outer;
       }
-      if (step.done) break;
+      if (step.done) {
+        exhaustedNormally = true;
+        break;
+      }
       parser.push(step.value);
       const reason = await flushDispatched();
       if (reason) {
@@ -378,15 +388,19 @@ export async function runSseTransport(
       stopReason = reason ?? (options.signal?.aborted ? 'aborted' : 'end-of-stream');
     }
   } finally {
-    // Replicate `for await` iterator-close semantics: every early exit
-    // (abort, caps, until-match) and every thrown callback/parser error
-    // releases the underlying input (generator + HTTP body) so no socket
-    // or decoder outlives the driver. Cleanup errors never replace the
-    // primary error or stop reason.
-    try {
-      await inputIterator.return?.();
-    } catch {
-      // Cleanup failure never masks the primary outcome.
+    // Replicate `for await` iterator-close semantics precisely: the
+    // iterator is closed ONLY when the loop exits early (abort, caps,
+    // until-match) or with an exception (thrown callback/parser error),
+    // never after normal exhaustion — a normally-finished resource has
+    // already released itself, and a spurious return() could double-close
+    // non-idempotent inputs. Cleanup errors never replace the primary
+    // error or stop reason.
+    if (!exhaustedNormally) {
+      try {
+        await inputIterator.return?.();
+      } catch {
+        // Cleanup failure never masks the primary outcome.
+      }
     }
   }
 

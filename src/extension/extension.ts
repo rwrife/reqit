@@ -18,6 +18,7 @@ import {
   serializeSseTranscript,
   sseOptionsFromDirectives,
   SseStreamRegistry,
+  type SseStreamHandle,
   type SseTranscriptRecord,
 } from '../core/sse/index.js';
 import { requestToCurl } from '../core/curl.js';
@@ -339,17 +340,25 @@ async function runRequest(
   // Dynamic import — keeps activation cheap and avoids bundling undici into the activation path.
   const { request } = await import('undici');
   const started = Date.now();
+  // Register the session BEFORE the first byte arrives so `Stop stream`
+  // can also cancel a request hanging on response headers (the SSE stop
+  // acceptance path must reach every live lifecycle state). For non-SSE
+  // responses the handle is released as soon as the response is known.
+  const stream = sseStreams.start();
+  let handedOff = false;
   try {
     const res = await request(opts.url, {
       method: opts.method,
       headers: opts.headers,
       body: opts.body,
+      signal: stream.signal,
     });
     const responseHeaders: Record<string, string> = Object.fromEntries(
       Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
     );
     if (isSseResponse(res.headers)) {
-      await streamSseResponse(context, req, opts, res, responseHeaders, started);
+      handedOff = true;
+      await streamSseResponse(context, req, opts, res, responseHeaders, started, stream);
       return;
     }
     const bodyText = await res.body.text();
@@ -363,14 +372,27 @@ async function runRequest(
     });
   } catch (err) {
     const elapsedMs = Date.now() - started;
-    vscode.window.showErrorMessage(`Reqit: request failed — ${(err as Error).message}`);
+    if (stream.signal.aborted) {
+      // The user stopped this request while it was waiting for response
+      // headers: `Stop stream` already reported it; don't double-report
+      // a deliberate cancellation as a transport failure.
+      return;
+    }
+    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
+    vscode.window.showErrorMessage(`Reqit: request failed — ${message}`);
     renderResponse(context, {
       request: opts,
       status: 0,
       headers: {},
-      body: `// Error after ${elapsedMs}ms\n${(err as Error).stack ?? (err as Error).message}`,
+      body: `// Error after ${elapsedMs}ms\n${sanitizeSseErrorText((err as Error).stack ?? (err as Error).message, 4000)}`,
       elapsedMs,
     });
+  } finally {
+    if (!handedOff) {
+      // Non-SSE (or failed) request: deregister so a later `Stop stream`
+      // never reports or touches a dead session.
+      stream.release();
+    }
   }
 }
 
@@ -395,6 +417,7 @@ async function streamSseResponse(
   res: { statusCode: number; body: AsyncIterable<unknown> },
   responseHeaders: Record<string, string>,
   _started: number,
+  stream: SseStreamHandle,
 ): Promise<void> {
   const requestForView = opts;
   const directives = sseOptionsFromDirectives(req.directives);
@@ -414,7 +437,9 @@ async function streamSseResponse(
     ...(initialNote !== undefined ? { note: initialNote } : {}),
   };
   const handle = renderSseResponse(context, state);
-  const stream = sseStreams.start();
+  // The registry handle is created by the caller (before the first byte)
+  // and owned here until the driver settles; `stream.release()` below is
+  // the single deregistration point for the SSE path.
 
   /**
    * Destroy the live HTTP body when the user stops the stream (or the
@@ -529,6 +554,11 @@ async function streamSseResponse(
     });
 
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
+    // The driver has finished: deregister BEFORE awaiting any follow-up
+    // prompt, so `Stop stream` can never report or touch this dead
+    // session while the user decides on the transcript save. (release()
+    // is idempotent; the finally below stays as a failure-path net.)
+    stream.release();
     if (lastSseTranscript !== undefined) {
       const transcript = lastSseTranscript;
       const action = await vscode.window.showInformationMessage(

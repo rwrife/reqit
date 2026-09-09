@@ -294,6 +294,32 @@ describe('runSseTransport — iterator cleanup', () => {
     ).rejects.toThrow('boom');
     expect(input.closed).toBe(true);
   });
+
+  it('does NOT call return() after normal iterator exhaustion (for-await semantics)', async () => {
+    let returnCalls = 0;
+    const chunks = ['data: a\n\n'];
+    let i = 0;
+    const input: AsyncIterable<string> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: async (): Promise<IteratorResult<string>> =>
+            i < chunks.length
+              ? { value: chunks[i++], done: false }
+              : { value: undefined as unknown as string, done: true },
+          return: async (): Promise<IteratorResult<string>> => {
+            returnCalls += 1;
+            return { value: undefined as unknown as string, done: true };
+          },
+        };
+      },
+    };
+    const result = await runSseTransport({ input, onEvent: () => {} });
+    expect(result.reason).toBe('end-of-stream');
+    // `for await` only closes the iterator on early exit; a normally
+    // exhausted iterator must not receive a spurious return() (which
+    // could double-release non-idempotent resources).
+    expect(returnCalls).toBe(0);
+  });
 });
 
 describe('runSseTransportWithReconnect', () => {

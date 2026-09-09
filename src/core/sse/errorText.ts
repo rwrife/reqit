@@ -21,7 +21,7 @@ export const SSE_ERROR_TEXT_MAX = 300;
  * value of `Authorization: Bearer VALUE` (not just the scheme) is dropped.
  */
 const SECRET_ASSIGNMENT =
-  /\b(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|access[-_]?token|token|secret|password|passwd)\b(\s*[:=]\s*)(?:Bearer\s+|Basic\s+|Digest\s+)?[^\s,;]*/gi;
+  /\b(authorization|proxy-authorization|x-api-key|api[-_]?key|apikey|access[-_]?token|token|secret|password|passwd)\b['"]?(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|Bearer\s+\S+|Basic\s+\S+|Digest\s+\S+|[^\s,;}]+)/gi;
 
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>]+/gi;
 
@@ -38,12 +38,18 @@ function sanitizeUrl(raw: string): string {
 /**
  * Render `text` for display: URLs keep scheme/host/port/path only, secret
  * assignments are masked, and the result is length-bounded.
+ *
+ * @param maxLength optional cap overriding {@link SSE_ERROR_TEXT_MAX} —
+ *        callers that must keep more context (e.g. an error stack rendered
+ *        in the response panel) may raise it; the sanitizer itself never
+ *        returns an unbounded string.
  */
-export function sanitizeSseErrorText(text: string): string {
+export function sanitizeSseErrorText(text: string, maxLength = SSE_ERROR_TEXT_MAX): string {
+  const cap = Math.max(16, Math.trunc(maxLength));
   let out = text.replace(URL_IN_TEXT, (url) => sanitizeUrl(url));
   out = out.replace(SECRET_ASSIGNMENT, (_m, name: string, sep: string) => `${name}${sep}[redacted]`);
-  if (out.length > SSE_ERROR_TEXT_MAX) {
-    out = `${out.slice(0, SSE_ERROR_TEXT_MAX - 1)}…`;
+  if (out.length > cap) {
+    out = `${out.slice(0, cap - 1)}…`;
   }
   return out;
 }
