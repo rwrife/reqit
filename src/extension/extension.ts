@@ -596,5 +596,10 @@ async function streamSseResponse(
     // later `Stop stream` never targets a dead session. Idempotent and
     // never aborts, so the transcript above is unaffected.
     stream.release();
+    // Release the webview message channel and panel ownership too, on
+    // EVERY terminal path (success, stop, transport failure): a completed
+    // session must never keep a live stop listener behind the rendered
+    // (now dead) button.
+    handle.dispose();
   }
 }

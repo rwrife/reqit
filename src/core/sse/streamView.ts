@@ -34,8 +34,8 @@ export function isSseStopMessage(message: unknown): message is { type: typeof SS
     typeof message === 'object' &&
     message !== null &&
     !Array.isArray(message) &&
-    Object.prototype.hasOwnProperty.call(message, 'type') &&
-    Object.getOwnPropertyNames(message).length === 1 &&
+    Object.getPrototypeOf(message) === Object.prototype &&
+    Reflect.ownKeys(message).length === 1 &&
     (message as { type: unknown }).type === SSE_STOP_MESSAGE_TYPE
   );
 }
@@ -83,7 +83,12 @@ export interface SseStreamViewOptions {
   nonce: string;
 }
 
-const NONCE_RE = /^[A-Za-z0-9+/=_-]+$/;
+const NONCE_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2,4})$/;
+
+/** Fail-closed numeric coercion: only finite-number text reaches markup. */
+function num(v: number): string {
+  return Number.isFinite(v) ? String(v) : '0';
+}
 
 function escape(s: string): string {
   return s
@@ -129,10 +134,10 @@ export function buildSseStreamHtml(
       const body = prettyEventData(e.data);
       return `<div class="sse-event">
         <div class="sse-event-head">
-          <span class="sse-index">#${e.index}</span>
+          <span class="sse-index">#${escape(num(e.index))}</span>
           <span class="sse-kind">${escape(e.type)}</span>
           ${id ? `<span class="sse-id">id=${escape(id)}</span>` : ''}
-          <span class="sse-elapsed">${e.elapsedMs}ms</span>
+          <span class="sse-elapsed">${escape(num(e.elapsedMs))}ms</span>
           <span class="sse-ts">${escape(e.timestamp)}</span>
         </div>
         <pre class="sse-data">${escape(body)}</pre>
@@ -140,8 +145,8 @@ export function buildSseStreamHtml(
     })
     .join('');
   const streamState = s.streaming
-    ? `<span class="sse-state sse-live">\u25CF streaming (${s.events.length} events)</span>`
-    : `<span class="sse-state sse-done">\u25A0 ${escape(s.stopReason ?? 'end-of-stream')} (${s.events.length} events)</span>`;
+    ? `<span class="sse-state sse-live">\u25CF streaming (${num(s.events.length)} events)</span>`
+    : `<span class="sse-state sse-done">\u25A0 ${escape(s.stopReason ?? 'end-of-stream')} (${num(s.events.length)} events)</span>`;
   const noteBlock = s.note ? `<div class="sse-note">${escape(s.note)}</div>` : '';
   // The stop button only exists while a live session can actually be
   // aborted — never render a control that cannot take effect.
@@ -149,8 +154,10 @@ export function buildSseStreamHtml(
     ? `<button id="reqit-sse-stop" type="button" title="Stop the live SSE stream" aria-label="Stop the live SSE stream">\u25A0 Stop stream</button>`
     : '';
   // Inline shim: acquire the (once-per-session) VS Code API handle lazily
-  // and post exactly one fixed message shape on click; disable the button
-  // after first click so a double-click cannot send two stops.
+  // and post exactly one fixed message shape on click. The one-shot latch
+  // is set and the button disabled BEFORE the post attempt, so a failed or
+  // exception-throwing post can never re-arm the control — an at-most-once
+  // channel beats a retry that could double-fire after a partial success.
   const stopScript = s.streaming
     ? `<script nonce="${nonce}">
 (function () {
@@ -160,15 +167,16 @@ export function buildSseStreamHtml(
   btn.addEventListener('click', function () {
     if (posted) return;
     posted = true;
+    btn.disabled = true;
+    btn.textContent = '\\u25A0 stopping\\u2026';
     try {
       var api = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
       if (api && typeof api.postMessage === 'function') {
         api.postMessage({ type: '${SSE_STOP_MESSAGE_TYPE}' });
-        btn.disabled = true;
-        btn.textContent = '\\u25A0 stopping\\u2026';
       }
     } catch (e) {
-      posted = false;
+      // Stay latched and disabled; the host treats a missing stop as
+      // "user can retry via the palette command", never double-post here.
     }
   });
 })();
@@ -197,7 +205,7 @@ export function buildSseStreamHtml(
   .sse-data { margin: 4px 0 0 0; font-size: 12px; }
 </style></head><body>
   <h2>${escape(s.method)} ${escape(s.url)} ${streamState}</h2>
-  <div class="meta">${escape(statusLine)} \u00B7 ${s.elapsedMs}ms since start</div>
+  <div class="meta">${escape(statusLine)} \u00B7 ${escape(num(s.elapsedMs))}ms since start</div>
   ${noteBlock}
   ${stopButton ? `<div class="sse-toolbar">${stopButton}</div>` : ''}
   <h2>Headers</h2>

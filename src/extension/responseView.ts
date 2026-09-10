@@ -44,6 +44,8 @@ export interface GrpcInfoRender {
 let panel: vscode.WebviewPanel | undefined;
 /** True when the current shared panel was created with `enableScripts: true` (SSE mode). */
 let ssePanelScripts = false;
+/** Opaque token identifying the SSE session currently allowed to own the panel. */
+let ssePanelOwner: object | undefined;
 
 /** Map the extension render-state to the pure stream-view model. */
 function toStreamViewModel(s: SseRenderState): SseStreamViewModel {
@@ -132,12 +134,18 @@ export function renderSseResponse(
     context.subscriptions.push(p);
   }
   const p = panel;
+  // Ownership token: the shared panel may host only ONE authoritative SSE
+  // session at a time. The newest session takes ownership; superseded
+  // sessions can neither repaint the panel nor act on stop messages
+  // (otherwise one click on a shared panel would abort every live stream).
+  const owner: object = {};
+  ssePanelOwner = owner;
   let current: SseRenderState = initial;
   const render = (): void => {
-    // Only paint into OUR panel. If the user ran a plain request meanwhile,
-    // the shared panel was replaced; painting stale SSE HTML into it (or
-    // re-enabling scripts there) would be wrong.
-    if (panel !== p) return;
+    // Paint only while WE own the panel slot. If a newer SSE session or a
+    // plain/gRPC view replaced us, painting stale SSE HTML (or hijacking
+    // the newer session's view) would be wrong.
+    if (panel !== p || ssePanelOwner !== owner) return;
     p.webview.html = buildSseStreamHtml(toStreamViewModel(current), {
       nonce: makeSseNonce(),
     });
@@ -145,11 +153,13 @@ export function renderSseResponse(
   render();
   p.reveal(undefined, true);
   // Message channel from the stop button. The payload is untrusted input:
-  // accept only the exact validated stop shape, act only while a live
-  // session exists, and route to the owning session's onStop (never the
-  // shared registry), so a click can only stop the stream it belongs to.
+  // accept only the exact validated stop shape, act only while THIS
+  // session is both live and the panel owner, and route to the owning
+  // session's onStop (never the shared registry), so a click can only
+  // stop the stream it belongs to.
   const msgSub = p.webview.onDidReceiveMessage((message: unknown) => {
     if (!isSseStopMessage(message)) return;
+    if (ssePanelOwner !== owner) return;
     if (!current.streaming) return;
     current.onStop?.();
   });
@@ -160,8 +170,11 @@ export function renderSseResponse(
     },
     dispose(): void {
       // Leave the panel visible so the user can read the final transcript,
-      // but stop listening: a stale rendered button can no longer act.
+      // but stop listening and give up ownership: a stale rendered button
+      // can no longer act, and a session that ended on its own must not
+      // block newer sessions from owning the panel.
       msgSub.dispose();
+      if (ssePanelOwner === owner) ssePanelOwner = undefined;
     },
   };
 }

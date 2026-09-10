@@ -106,6 +106,56 @@ describe('buildSseStreamHtml — CSP + nonce lockdown', () => {
     expect(() => html(model(), 'bad nonce')).toThrow();
     expect(() => html(model(), '')).toThrow();
   });
+
+  it('rejects non-canonical base64 shapes (embedded =, misplaced padding)', () => {
+    expect(() => html(model(), 'a=b')).toThrow();
+    expect(() => html(model(), 'QQ==QQ==')).toThrow();
+    expect(() => html(model(), 'A')).toThrow();
+    expect(() => html(model(), 'AA=')).toThrow();
+    expect(() => html(model(), '====')).toThrow();
+  });
+
+  it('accepts canonical base64 nonces (unpadded and padded forms)', () => {
+    expect(() => html(model(), 'aGVsbG8td29ybGQ=')).not.toThrow();
+    expect(() => html(model(), 'QQ==')).not.toThrow();
+    expect(() => html(model(), 'QUJD')).not.toThrow();
+  });
+});
+
+describe('buildSseStreamHtml — fail-closed numeric fields', () => {
+  it('coerces non-finite numeric view fields to 0 instead of echoing garbage', () => {
+    const hostile = model({
+      elapsedMs: Number.POSITIVE_INFINITY,
+      events: [
+        { index: Number.NaN, type: 'x', elapsedMs: Number.NaN, timestamp: 't', data: 'd' },
+      ],
+    }) as unknown as SseStreamViewModel;
+    const out = html(hostile);
+    expect(out).not.toContain('Infinity');
+    expect(out).not.toContain('NaN');
+    expect(out).toContain('#0');
+    expect(out).toContain('0ms');
+  });
+});
+
+describe('buildSseStreamHtml — stop shim at-most-once latch', () => {
+  it('latches and disables the button BEFORE attempting postMessage', () => {
+    const out = html();
+    const script = out.slice(out.indexOf('<script'), out.indexOf('</script>'));
+    const latchIdx = script.indexOf('posted = true');
+    const disableIdx = script.indexOf('btn.disabled = true');
+    const postIdx = script.indexOf('api.postMessage');
+    expect(latchIdx).toBeGreaterThan(-1);
+    expect(disableIdx).toBeGreaterThan(-1);
+    expect(postIdx).toBeGreaterThan(-1);
+    expect(latchIdx).toBeLessThan(postIdx);
+    expect(disableIdx).toBeLessThan(postIdx);
+    // The old failure path re-armed the latch inside catch (`posted = false`
+    // after the declaration). Only the initial `var posted = false;` may exist.
+    const reArm = script.match(/posted\s*=\s*false/g) ?? [];
+    expect(reArm).toHaveLength(1);
+    expect(script.indexOf('posted = false')).toBe(script.indexOf('var posted = false') + 4);
+  });
 });
 
 describe('buildSseStreamHtml — escaping (untrusted event data)', () => {
@@ -194,5 +244,21 @@ describe('isSseStopMessage — host-side message validation', () => {
   it('rejects prototype-injected type values', () => {
     const forged = Object.create({ type: SSE_STOP_MESSAGE_TYPE });
     expect(isSseStopMessage(forged)).toBe(false);
+  });
+
+  it('rejects a plain object with an own type property but a forged prototype chain', () => {
+    const obj = { type: SSE_STOP_MESSAGE_TYPE };
+    Object.setPrototypeOf(obj, { evil: true });
+    expect(isSseStopMessage(obj)).toBe(false);
+  });
+
+  it('rejects objects carrying extra symbol-keyed properties', () => {
+    const obj: Record<PropertyKey, unknown> = { type: SSE_STOP_MESSAGE_TYPE };
+    Object.defineProperty(obj, Symbol('smuggle'), { value: 1, enumerable: false });
+    expect(isSseStopMessage(obj)).toBe(false);
+  });
+
+  it('accepts only the canonical prototype with exactly one own key', () => {
+    expect(isSseStopMessage(JSON.parse('{"type":"reqit-sse-stop"}'))).toBe(true);
   });
 });
