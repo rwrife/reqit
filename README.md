@@ -261,13 +261,18 @@ The VS Code response-viewer wiring for SSE now lives on top of this
 core: when `Send Request` fires a request whose response has
 `Content-Type: text/event-stream`, the response panel switches into
 streaming mode and appends events (with type, id, elapsed time and
-pretty-printed `data`) live as they arrive. When a stream ends, Reqit caches the
+pretty-printed `data`) live as they arrive. While a stream is live the panel
+shows a dedicated **Stop stream** button that aborts exactly that session
+(its markup comes from the pure `src/core/sse/streamView.ts` builder — a
+strict CSP with a per-render script nonce, a single validated stop message,
+and no other script). When a stream ends, Reqit caches the
 captured event transcript and offers **Save transcript**; you can also run
 `Reqit: Save Last SSE Transcript` from the command palette to write
-`.sse.jsonl` into `.requests/.history/` (or another path you choose). Closing the
-panel still does not abort the socket; that known #55 cancellation gap is documented
-in the threat model. Reconnect + `Last-Event-ID` retry landed in
-[#68](https://github.com/rwrife/reqit/pull/68). A dedicated **Stop stream** action
+`.sse.jsonl` into `.requests/.history/` (or another path you choose).
+Closing the panel alone does not stop a live stream — use the Stop button
+or `Reqit: Stop SSE Stream`.
+Reconnect + `Last-Event-ID` retry landed in
+[#68](https://github.com/rwrife/reqit/pull/68). A palette-wide **Stop stream** action
 (`Reqit: Stop SSE Stream`) aborts every live session through a pure
 `SseStreamRegistry` (`src/core/sse/streamControl.ts`): the transport races the
 next-chunk wait against the stop signal, so a stalled connection returns

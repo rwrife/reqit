@@ -433,6 +433,12 @@ async function streamSseResponse(
     events,
     streaming: true,
     ...(initialNote !== undefined ? { note: initialNote } : {}),
+    // The webview "Stop stream" button routes here via the validated
+    // message channel. `stream.abort()` is idempotent and id-scoped: it
+    // only ever stops THIS session (never whatever happens to be last).
+    onStop: () => {
+      stream.abort();
+    },
   };
   const handle = renderSseResponse(context, state);
   // The registry handle is created by the caller (before the first byte)
