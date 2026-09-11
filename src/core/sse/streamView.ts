@@ -12,8 +12,9 @@
  *     scripts restricted to a caller-provided per-render nonce. The only
  *     script is the click-to-postMessage shim for the stop button.
  *   - The inline shim posts a single fixed message shape
- *     (`{ type: SSE_STOP_MESSAGE_TYPE }`); the extension host validates
- *     it and aborts the owning session. No other message is ever sent.
+ *     (`{ type: SSE_STOP_MESSAGE_TYPE, token: <per-session> }`); the
+ *     extension host validates it against the owning session's token and
+ *     aborts that session. No other message is ever sent.
  *
  * This module is pure: no VS Code, no network, no I/O.
  */
