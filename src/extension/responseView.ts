@@ -102,6 +102,20 @@ function makeSseNonce(): string {
   return randomBytes(12).toString('base64');
 }
 
+/** Per-session stop token: base64url charset keeps it safe inside the shim's JS literal. */
+function makeSseStopToken(): string {
+  return randomBytes(12).toString('base64url');
+}
+
+/**
+ * Active SSE message-channel listener on the shared panel. Ownership
+ * handoff DISPOSES the previous listener synchronously, so superseded
+ * sessions stop receiving messages the instant a new session takes the
+ * panel — queued deliveries can only ever reach the current owner's
+ * listener, which additionally re-checks the per-session token.
+ */
+let sseMsgSub: vscode.Disposable | undefined;
+
 export function renderSseResponse(
   context: vscode.ExtensionContext,
   initial: SseRenderState,
@@ -135,10 +149,13 @@ export function renderSseResponse(
   }
   const p = panel;
   // Ownership token: the shared panel may host only ONE authoritative SSE
-  // session at a time. The newest session takes ownership; superseded
-  // sessions can neither repaint the panel nor act on stop messages
-  // (otherwise one click on a shared panel would abort every live stream).
+  // session at a time. The newest session takes ownership AND disposes the
+  // superseded session's message listener synchronously, so one click can
+  // only ever reach the current owner (and the token check below makes a
+  // queued-but-already-dispatched old message inert even in the race).
   const owner: object = {};
+  const stopToken = makeSseStopToken();
+  sseMsgSub?.dispose();
   ssePanelOwner = owner;
   let current: SseRenderState = initial;
   const render = (): void => {
@@ -148,21 +165,24 @@ export function renderSseResponse(
     if (panel !== p || ssePanelOwner !== owner) return;
     p.webview.html = buildSseStreamHtml(toStreamViewModel(current), {
       nonce: makeSseNonce(),
+      stopToken,
     });
   };
   render();
   p.reveal(undefined, true);
   // Message channel from the stop button. The payload is untrusted input:
-  // accept only the exact validated stop shape, act only while THIS
-  // session is both live and the panel owner, and route to the owning
-  // session's onStop (never the shared registry), so a click can only
-  // stop the stream it belongs to.
+  // accept only the exact validated token-bound stop shape, act only while
+  // THIS session is live and the panel owner, and route to the owning
+  // session's onStop (never the shared registry), so a click can only stop
+  // the stream rendered in the panel.
   const msgSub = p.webview.onDidReceiveMessage((message: unknown) => {
-    if (!isSseStopMessage(message)) return;
+    if (!isSseStopMessage(message, stopToken)) return;
     if (ssePanelOwner !== owner) return;
     if (!current.streaming) return;
     current.onStop?.();
   });
+  // This session is the active listener while it owns the panel.
+  sseMsgSub = msgSub;
   return {
     update(next: SseRenderState): void {
       current = next;
@@ -172,8 +192,11 @@ export function renderSseResponse(
       // Leave the panel visible so the user can read the final transcript,
       // but stop listening and give up ownership: a stale rendered button
       // can no longer act, and a session that ended on its own must not
-      // block newer sessions from owning the panel.
+      // block newer sessions from owning the panel. Idempotent: disposing
+      // a vscode.Disposable twice is safe, and the shared-listener slot is
+      // only cleared if it still points at OUR subscription.
       msgSub.dispose();
+      if (sseMsgSub === msgSub) sseMsgSub = undefined;
       if (ssePanelOwner === owner) ssePanelOwner = undefined;
     },
   };

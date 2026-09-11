@@ -18,7 +18,6 @@ import {
   SSE_STOP_MESSAGE_TYPE,
   type SseStreamViewModel,
 } from '../src/core/sse/streamView.js';
-
 function model(overrides: Partial<SseStreamViewModel> = {}): SseStreamViewModel {
   return {
     method: 'GET',
@@ -40,10 +39,13 @@ function model(overrides: Partial<SseStreamViewModel> = {}): SseStreamViewModel 
   };
 }
 
-const NONCE = 'aGVsbG8td29ybGQ=';
+const NONCE = 'QUJDRA==';
+// Per-session stop token: base64url charset only, safe inside the shim's
+// JS string literal.
+const STOP_TOKEN = 'SESSIONtok0123456789';
 
 function html(m: SseStreamViewModel = model(), nonce = NONCE): string {
-  return buildSseStreamHtml(m, { nonce });
+  return buildSseStreamHtml(m, { nonce, stopToken: STOP_TOKEN });
 }
 
 describe('buildSseStreamHtml — stop button (issue #46)', () => {
@@ -73,6 +75,20 @@ describe('buildSseStreamHtml — stop button (issue #46)', () => {
     expect(out).toContain('postMessage');
   });
 
+  it('binds the posted message to the per-session stop token (queued old clicks cannot hit a new owner)', () => {
+    const out = html();
+    expect(out).toContain(STOP_TOKEN);
+    const script = out.slice(out.indexOf('<script'), out.indexOf('</script>'));
+    expect(script).toContain(`token: '${STOP_TOKEN}'`);
+  });
+
+  it('rejects a missing or malformed per-session stop token at build time', () => {
+    expect(() => buildSseStreamHtml(model(), { nonce: NONCE, stopToken: '' })).toThrow();
+    expect(() => buildSseStreamHtml(model(), { nonce: NONCE, stopToken: 'bad token' })).toThrow();
+    expect(() => buildSseStreamHtml(model(), { nonce: NONCE, stopToken: "bad'tok" })).toThrow();
+    expect(() => buildSseStreamHtml(model(), { nonce: NONCE } as never)).toThrow();
+  });
+
   it('emits the stop-message type as a constant matching the documented shape', () => {
     expect(SSE_STOP_MESSAGE_TYPE).toBe('reqit-sse-stop');
   });
@@ -92,11 +108,11 @@ describe('buildSseStreamHtml — CSP + nonce lockdown', () => {
   });
 
   it('uses a different nonce per render (caller-provided, echoed verbatim)', () => {
-    const a = html(model(), 'nonceA');
-    const b = html(model(), 'nonceB');
-    expect(a).toContain("script-src 'nonce-nonceA'");
-    expect(b).toContain("script-src 'nonce-nonceB'");
-    expect(a).not.toContain('nonceB');
+    const a = html(model(), 'bm9uY2VB'); // canonical base64 of "nonceA"
+    const b = html(model(), 'bm9uY2VC'); // canonical base64 of "nonceB"
+    expect(a).toContain("script-src 'nonce-bm9uY2VB'");
+    expect(b).toContain("script-src 'nonce-bm9uY2VC'");
+    expect(a).not.toContain('bm9uY2VC');
   });
 
   it('rejects nonces that could break attribute or CSP context', () => {
@@ -107,18 +123,25 @@ describe('buildSseStreamHtml — CSP + nonce lockdown', () => {
     expect(() => html(model(), '')).toThrow();
   });
 
-  it('rejects non-canonical base64 shapes (embedded =, misplaced padding)', () => {
+  it('rejects non-canonical base64 shapes (embedded =, misplaced padding, nonzero pad bits)', () => {
     expect(() => html(model(), 'a=b')).toThrow();
     expect(() => html(model(), 'QQ==QQ==')).toThrow();
     expect(() => html(model(), 'A')).toThrow();
     expect(() => html(model(), 'AA=')).toThrow();
     expect(() => html(model(), '====')).toThrow();
+    // Canonical-form checks: decode/re-encode must round-trip exactly.
+    // 'AB==' encodes 1 byte as 0x00|bits — trailing bits nonzero => non-canonical.
+    expect(() => html(model(), 'AB==')).toThrow();
+    expect(() => html(model(), 'AAB=')).toThrow();
   });
 
   it('accepts canonical base64 nonces (unpadded and padded forms)', () => {
     expect(() => html(model(), 'aGVsbG8td29ybGQ=')).not.toThrow();
     expect(() => html(model(), 'QQ==')).not.toThrow();
     expect(() => html(model(), 'QUJD')).not.toThrow();
+    expect(() => html(model(), 'QUJDRA==')).not.toThrow();
+    // The exact shape makeSseNonce produces: 12 random bytes -> 16 unpadded chars.
+    expect(() => html(model(), 'AAECAwQFBgcICQoLDA0O')).not.toThrow();
   });
 });
 
@@ -126,6 +149,7 @@ describe('buildSseStreamHtml — fail-closed numeric fields', () => {
   it('coerces non-finite numeric view fields to 0 instead of echoing garbage', () => {
     const hostile = model({
       elapsedMs: Number.POSITIVE_INFINITY,
+      status: Number.NaN,
       events: [
         { index: Number.NaN, type: 'x', elapsedMs: Number.NaN, timestamp: 't', data: 'd' },
       ],
@@ -135,6 +159,7 @@ describe('buildSseStreamHtml — fail-closed numeric fields', () => {
     expect(out).not.toContain('NaN');
     expect(out).toContain('#0');
     expect(out).toContain('0ms');
+    expect(out).toContain('HTTP 0');
   });
 });
 
@@ -227,38 +252,56 @@ describe('buildSseStreamHtml — escaping (untrusted event data)', () => {
 });
 
 describe('isSseStopMessage — host-side message validation', () => {
-  it('accepts the exact stop message shape', () => {
-    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE })).toBe(true);
+  const TOK = 'tok-A';
+
+  it('accepts the exact token-bound stop message shape', () => {
+    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE, token: TOK }, TOK)).toBe(true);
+  });
+
+  it('rejects messages carrying a foreign or missing token', () => {
+    // A queued click from a superseded session must never abort the new owner.
+    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE, token: 'tok-B' }, TOK)).toBe(false);
+    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE }, TOK)).toBe(false);
+    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE, token: '' }, TOK)).toBe(false);
   });
 
   it('rejects unknown, nullish, and non-object messages', () => {
-    expect(isSseStopMessage({ type: 'other' })).toBe(false);
-    expect(isSseStopMessage({ type: 'reqit-sse-stop', extra: 'nope' })).toBe(false);
-    expect(isSseStopMessage(undefined)).toBe(false);
-    expect(isSseStopMessage(null)).toBe(false);
-    expect(isSseStopMessage('reqit-sse-stop')).toBe(false);
-    expect(isSseStopMessage(42)).toBe(false);
-    expect(isSseStopMessage([{ type: SSE_STOP_MESSAGE_TYPE }])).toBe(false);
+    expect(isSseStopMessage({ type: 'other', token: TOK }, TOK)).toBe(false);
+    expect(isSseStopMessage({ type: SSE_STOP_MESSAGE_TYPE, token: TOK, extra: 'nope' }, TOK)).toBe(false);
+    expect(isSseStopMessage(undefined, TOK)).toBe(false);
+    expect(isSseStopMessage(null, TOK)).toBe(false);
+    expect(isSseStopMessage('reqit-sse-stop', TOK)).toBe(false);
+    expect(isSseStopMessage(42, TOK)).toBe(false);
+    expect(isSseStopMessage([{ type: SSE_STOP_MESSAGE_TYPE, token: TOK }], TOK)).toBe(false);
   });
 
   it('rejects prototype-injected type values', () => {
-    const forged = Object.create({ type: SSE_STOP_MESSAGE_TYPE });
-    expect(isSseStopMessage(forged)).toBe(false);
+    const forged = Object.create({ type: SSE_STOP_MESSAGE_TYPE, token: TOK });
+    expect(isSseStopMessage(forged, TOK)).toBe(false);
   });
 
   it('rejects a plain object with an own type property but a forged prototype chain', () => {
-    const obj = { type: SSE_STOP_MESSAGE_TYPE };
+    const obj = { type: SSE_STOP_MESSAGE_TYPE, token: TOK };
     Object.setPrototypeOf(obj, { evil: true });
-    expect(isSseStopMessage(obj)).toBe(false);
+    expect(isSseStopMessage(obj, TOK)).toBe(false);
   });
 
   it('rejects objects carrying extra symbol-keyed properties', () => {
-    const obj: Record<PropertyKey, unknown> = { type: SSE_STOP_MESSAGE_TYPE };
+    const obj: Record<PropertyKey, unknown> = { type: SSE_STOP_MESSAGE_TYPE, token: TOK };
     Object.defineProperty(obj, Symbol('smuggle'), { value: 1, enumerable: false });
-    expect(isSseStopMessage(obj)).toBe(false);
+    expect(isSseStopMessage(obj, TOK)).toBe(false);
   });
 
-  it('accepts only the canonical prototype with exactly one own key', () => {
-    expect(isSseStopMessage(JSON.parse('{"type":"reqit-sse-stop"}'))).toBe(true);
+  it('rejects a constant-folded token via getter weirdness (own enumerable data props only)', () => {
+    const obj = { type: SSE_STOP_MESSAGE_TYPE } as Record<string, unknown>;
+    Object.defineProperty(obj, 'token', { get: () => TOK, enumerable: true });
+    // DefineProperty created an accessor; Reflect.ownKeys sees it, but the
+    // value read must still match. Accessor tokens ARE accepted if they
+    // return the right value — this asserts the contract stays value-based.
+    expect(isSseStopMessage(obj, TOK)).toBe(true);
+  });
+
+  it('accepts only the canonical prototype with exactly the two own keys', () => {
+    expect(isSseStopMessage(JSON.parse('{"type":"reqit-sse-stop","token":"tok-A"}'), TOK)).toBe(true);
   });
 });

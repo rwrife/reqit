@@ -22,22 +22,44 @@
 export const SSE_STOP_MESSAGE_TYPE = 'reqit-sse-stop' as const;
 
 /**
- * Host-side validation for webview messages. Webview `postMessage` payloads
- * are untrusted input: accept ONLY a plain object whose own (not
- * prototype-inherited) `type` property is the stop constant and that has no
- * other properties. Anything else — including forged prototypes, arrays,
- * and smuggled extra fields — is rejected so a compromised/buggy view can
- * never smuggle consequential data through this channel.
+ * Token charset the host generates per session (base64url) — restricted so
+ * the token is safe inside the shim's single-quoted JS string literal and
+ * cannot break the script context.
  */
-export function isSseStopMessage(message: unknown): message is { type: typeof SSE_STOP_MESSAGE_TYPE } {
-  return (
-    typeof message === 'object' &&
-    message !== null &&
-    !Array.isArray(message) &&
-    Object.getPrototypeOf(message) === Object.prototype &&
-    Reflect.ownKeys(message).length === 1 &&
-    (message as { type: unknown }).type === SSE_STOP_MESSAGE_TYPE
-  );
+const STOP_TOKEN_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+/** Length-bounded constant-time string equality (no timing oracle on the token). */
+function tokenEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
+ * Host-side validation for webview messages. Webview `postMessage` payloads
+ * are untrusted input. Accept ONLY a plain-prototype object with exactly the
+ * two own keys `type` (the stop constant) and `token` (matching this
+ * session's unguessable per-session token) — arrays, primitives,
+ * prototype-forged objects, symbol-keyed extras, foreign/missing tokens and
+ * smuggled extra fields are all rejected. Token binding is what makes a
+ * QUEUED click from a superseded session harmless: even if its message is
+ * delivered after a newer session took ownership, the token will not match
+ * the newer session and the host ignores it.
+ */
+export function isSseStopMessage(
+  message: unknown,
+  expectedToken: string,
+): message is { type: typeof SSE_STOP_MESSAGE_TYPE; token: string } {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) return false;
+  if (Object.getPrototypeOf(message) !== Object.prototype) return false;
+  if (Reflect.ownKeys(message).length !== 2) return false;
+  const record = message as { type?: unknown; token?: unknown };
+  if (record.type !== SSE_STOP_MESSAGE_TYPE) return false;
+  if (typeof record.token !== 'string') return false;
+  return tokenEquals(record.token, expectedToken);
 }
 
 /** One rendered SSE event row. */
@@ -76,14 +98,36 @@ export interface SseStreamViewModel {
 
 export interface SseStreamViewOptions {
   /**
-   * Per-render CSP nonce for the inline shim. Must be a token that is safe
-   * inside both the CSP `script-src` directive and an HTML attribute
-   * value; anything else is rejected loudly.
+   * Per-render CSP nonce for the inline shim. Must be canonical base64
+   * that is safe inside both the CSP `script-src` directive and an HTML
+   * attribute value; anything else is rejected loudly.
    */
   nonce: string;
+  /**
+   * Unguessable per-session token (base64url, 8-64 chars) embedded in the
+   * posted stop message. The host re-checks it against the SAME session
+   * that owns the panel, so a queued click from a superseded session can
+   * never abort the current owner.
+   */
+  stopToken: string;
 }
 
 const NONCE_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2,4})$/;
+
+/**
+ * Canonical-form check: syntax-valid base64 can still carry nonzero
+ * "unused" pad bits (`AB==` decodes to a byte whose low 4 bits are junk and
+ * re-encodes differently). Strict CSP nonces should be canonical, so decode
+ * and re-encode and require byte-exact round-trip.
+ */
+function isCanonicalBase64(value: string): boolean {
+  if (!NONCE_RE.test(value)) return false;
+  const raw = Buffer.from(value, 'base64').toString('base64');
+  // Buffer tolerates missing padding; compare against the padded canon of
+  // our (already syntax-valid) input and allow the unpadded presentation.
+  const padded = raw.replace(/=+$/, '');
+  return raw === value || padded === value;
+}
 
 /** Fail-closed numeric coercion: only finite-number text reaches markup. */
 function num(v: number): string {
@@ -120,14 +164,19 @@ export function buildSseStreamHtml(
   s: SseStreamViewModel,
   opts: SseStreamViewOptions,
 ): string {
-  if (!NONCE_RE.test(opts.nonce)) {
-    throw new Error('SSE stream view: nonce must be a CSP/attribute-safe token');
+  if (!isCanonicalBase64(opts.nonce)) {
+    throw new Error('SSE stream view: nonce must be canonical, CSP/attribute-safe base64');
+  }
+  if (typeof opts.stopToken !== 'string' || !STOP_TOKEN_RE.test(opts.stopToken)) {
+    throw new Error('SSE stream view: stopToken must be an 8-64 char base64url token');
   }
   const nonce = opts.nonce;
   const headerLines = Object.entries(s.headers)
     .map(([k, v]) => `${escape(k)}: ${escape(v)}`)
     .join('\n');
-  const statusLine = s.status === 0 ? 'NETWORK ERROR' : `HTTP ${s.status}`;
+  // Only an exact 0 means the network-error convention; other non-finite
+  // values coerce to "HTTP 0" so garbage can never render as-is.
+  const statusLine = s.status === 0 ? 'NETWORK ERROR' : `HTTP ${num(s.status)}`;
   const rows = s.events
     .map((e) => {
       const id = e.lastEventId ?? '';
@@ -172,7 +221,7 @@ export function buildSseStreamHtml(
     try {
       var api = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
       if (api && typeof api.postMessage === 'function') {
-        api.postMessage({ type: '${SSE_STOP_MESSAGE_TYPE}' });
+        api.postMessage({ type: '${SSE_STOP_MESSAGE_TYPE}', token: '${opts.stopToken}' });
       }
     } catch (e) {
       // Stay latched and disabled; the host treats a missing stop as

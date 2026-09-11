@@ -40,6 +40,7 @@ export {
 export {
   buildSseTranscriptFileName,
   serializeSseTranscript,
+  pickSseTranscriptRecord,
   type SseTranscriptRecord,
 } from './transcript.js';
 export {
