@@ -13,6 +13,7 @@ import {
   buildSseTranscriptFileName,
   closeOnAbort,
   isSseResponse,
+  pickSseTranscriptRecord,
   runSseTransportWithReconnect,
   sanitizeSseErrorText,
   serializeSseTranscript,
@@ -433,6 +434,12 @@ async function streamSseResponse(
     events,
     streaming: true,
     ...(initialNote !== undefined ? { note: initialNote } : {}),
+    // The webview "Stop stream" button routes here via the validated
+    // message channel. `stream.abort()` is idempotent and id-scoped: it
+    // only ever stops THIS session (never whatever happens to be last).
+    onStop: () => {
+      stream.abort();
+    },
   };
   const handle = renderSseResponse(context, state);
   // The registry handle is created by the caller (before the first byte)
@@ -518,7 +525,12 @@ async function streamSseResponse(
     onEvent: (event, meta) => {
       const eventTimestampMs = Date.now();
       events.push({ event, meta, timestamp: new Date(eventTimestampMs).toISOString() });
-      transcriptRecords.push({ event, index: meta.index, timestampMs: eventTimestampMs });
+      // Capture through the production allowlist boundary: even though
+      // `opts` (auth headers included) is in scope here, only the three
+      // record fields can enter the transcript.
+      transcriptRecords.push(
+        pickSseTranscriptRecord({ event, index: meta.index, timestampMs: eventTimestampMs, sentRequest: opts }),
+      );
       state.elapsedMs = meta.elapsedMs;
       handle.update({ ...state, events: [...events] });
     },
@@ -550,6 +562,12 @@ async function streamSseResponse(
       events: [...events],
       ...(finalNote !== undefined ? { note: finalNote } : {}),
     });
+    // Dispose the message channel IMMEDIATELY after the terminal render —
+    // BEFORE awaiting the transcript prompt, which can stay unresolved
+    // indefinitely. A completed session must never keep a live stop
+    // listener (or panel ownership) while the user decides on the save.
+    // Idempotent; the finally below stays as the failure-path net.
+    handle.dispose();
 
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
     // The driver has finished: deregister BEFORE awaiting any follow-up
@@ -590,5 +608,10 @@ async function streamSseResponse(
     // later `Stop stream` never targets a dead session. Idempotent and
     // never aborts, so the transcript above is unaffected.
     stream.release();
+    // Release the webview message channel and panel ownership too, on
+    // EVERY terminal path (success, stop, transport failure): a completed
+    // session must never keep a live stop listener behind the rendered
+    // (now dead) button.
+    handle.dispose();
   }
 }

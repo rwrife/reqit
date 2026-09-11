@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
+import { randomBytes } from 'node:crypto';
 import { tryParseGraphQLResponse } from '../core/graphql.js';
+import {
+  buildSseStreamHtml,
+  isSseStopMessage,
+  type SseStreamViewModel,
+} from '../core/sse/streamView.js';
 import type { UndiciRequestOptions } from '../core/request.js';
 import type { ParsedGrpcRequest } from '../core/grpc.js';
 import type { SseEvent } from '../core/sse/index.js';
@@ -36,6 +42,32 @@ export interface GrpcInfoRender {
 }
 
 let panel: vscode.WebviewPanel | undefined;
+/** True when the current shared panel was created with `enableScripts: true` (SSE mode). */
+let ssePanelScripts = false;
+/** Opaque token identifying the SSE session currently allowed to own the panel. */
+let ssePanelOwner: object | undefined;
+
+/** Map the extension render-state to the pure stream-view model. */
+function toStreamViewModel(s: SseRenderState): SseStreamViewModel {
+  return {
+    method: s.request.method,
+    url: s.request.url,
+    status: s.status,
+    headers: s.headers,
+    elapsedMs: s.elapsedMs,
+    streaming: s.streaming,
+    ...(s.stopReason !== undefined ? { stopReason: s.stopReason } : {}),
+    events: s.events.map((e) => ({
+      index: e.meta.index,
+      type: e.event.type,
+      ...(e.event.lastEventId !== undefined ? { lastEventId: e.event.lastEventId } : {}),
+      elapsedMs: e.meta.elapsedMs,
+      timestamp: e.timestamp,
+      data: e.event.data,
+    })),
+    ...(s.note !== undefined ? { note: s.note } : {}),
+  };
+}
 
 export interface SseRenderEvent {
   event: SseEvent;
@@ -65,44 +97,122 @@ export interface SseRenderHandle {
   dispose(): void;
 }
 
+/** CSP nonce for one render: base64 of 12 random bytes is always token-safe. */
+function makeSseNonce(): string {
+  return randomBytes(12).toString('base64');
+}
+
+/** Per-session stop token: base64url charset keeps it safe inside the shim's JS literal. */
+function makeSseStopToken(): string {
+  return randomBytes(12).toString('base64url');
+}
+
+/**
+ * Active SSE message-channel listener on the shared panel. Ownership
+ * handoff DISPOSES the previous listener synchronously, so superseded
+ * sessions stop receiving messages the instant a new session takes the
+ * panel — queued deliveries can only ever reach the current owner's
+ * listener, which additionally re-checks the per-session token.
+ */
+let sseMsgSub: vscode.Disposable | undefined;
+
 export function renderSseResponse(
   context: vscode.ExtensionContext,
   initial: SseRenderState,
 ): SseRenderHandle {
+  // The SSE panel needs scripts (stop-button shim only, locked by CSP).
+  // A panel created earlier for a plain response has enableScripts:false
+  // and VS Code cannot toggle that after creation — recreate in that case.
+  if (panel && !ssePanelScripts) {
+    const stale = panel;
+    panel = undefined;
+    stale.dispose();
+  }
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'reqit.response',
       'Reqit Response',
       vscode.ViewColumn.Beside,
-      { enableScripts: false, retainContextWhenHidden: true },
+      { enableScripts: true, retainContextWhenHidden: true },
     );
+    ssePanelScripts = true;
     const p = panel;
     p.onDidDispose(() => {
-      panel = undefined;
+      // Only clear the shared slot if WE still own it — a replacement
+      // (dispose during panel swap) must not clobber the new panel.
+      if (panel === p) {
+        panel = undefined;
+        ssePanelScripts = false;
+      }
     });
     context.subscriptions.push(p);
   }
   const p = panel;
+  // Ownership token: the shared panel may host only ONE authoritative SSE
+  // session at a time. The newest session takes ownership AND disposes the
+  // superseded session's message listener synchronously, so one click can
+  // only ever reach the current owner (and the token check below makes a
+  // queued-but-already-dispatched old message inert even in the race).
+  const owner: object = {};
+  const stopToken = makeSseStopToken();
+  sseMsgSub?.dispose();
+  ssePanelOwner = owner;
   let current: SseRenderState = initial;
   const render = (): void => {
-    if (!panel) return;
-    p.webview.html = sseHtml(current);
+    // Paint only while WE own the panel slot. If a newer SSE session or a
+    // plain/gRPC view replaced us, painting stale SSE HTML (or hijacking
+    // the newer session's view) would be wrong.
+    if (panel !== p || ssePanelOwner !== owner) return;
+    p.webview.html = buildSseStreamHtml(toStreamViewModel(current), {
+      nonce: makeSseNonce(),
+      stopToken,
+    });
   };
   render();
   p.reveal(undefined, true);
+  // Message channel from the stop button. The payload is untrusted input:
+  // accept only the exact validated token-bound stop shape, act only while
+  // THIS session is live and the panel owner, and route to the owning
+  // session's onStop (never the shared registry), so a click can only stop
+  // the stream rendered in the panel.
+  const msgSub = p.webview.onDidReceiveMessage((message: unknown) => {
+    if (!isSseStopMessage(message, stopToken)) return;
+    if (ssePanelOwner !== owner) return;
+    if (!current.streaming) return;
+    current.onStop?.();
+  });
+  // This session is the active listener while it owns the panel.
+  sseMsgSub = msgSub;
   return {
     update(next: SseRenderState): void {
       current = next;
       render();
     },
     dispose(): void {
-      // Leave the panel visible so the user can read the final transcript.
+      // Leave the panel visible so the user can read the final transcript,
+      // but stop listening and give up ownership: a stale rendered button
+      // can no longer act, and a session that ended on its own must not
+      // block newer sessions from owning the panel. Idempotent: disposing
+      // a vscode.Disposable twice is safe, and the shared-listener slot is
+      // only cleared if it still points at OUR subscription.
+      msgSub.dispose();
+      if (sseMsgSub === msgSub) sseMsgSub = undefined;
+      if (ssePanelOwner === owner) ssePanelOwner = undefined;
     },
   };
 }
 
 
 export function renderResponse(context: vscode.ExtensionContext, r: ResponseRender): void {
+  // Symmetric with renderSseResponse: plain responses never need scripts.
+  // If the shared panel was created in SSE mode (enableScripts:true),
+  // recreate it scripts-disabled so the smaller attack surface is kept.
+  if (panel && ssePanelScripts) {
+    const stale = panel;
+    panel = undefined;
+    ssePanelScripts = false;
+    stale.dispose();
+  }
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'reqit.response',
@@ -110,8 +220,10 @@ export function renderResponse(context: vscode.ExtensionContext, r: ResponseRend
       vscode.ViewColumn.Beside,
       { enableScripts: false, retainContextWhenHidden: true },
     );
-    panel.onDidDispose(() => {
-      panel = undefined;
+    const created = panel;
+    created.onDidDispose(() => {
+      // Ownership guard: never clear a slot a newer panel already took.
+      if (panel === created) panel = undefined;
     });
     context.subscriptions.push(panel);
   }
@@ -190,6 +302,14 @@ export function renderGrpcInfo(
   context: vscode.ExtensionContext,
   r: GrpcInfoRender,
 ): void {
+  // Same scripts-disabled guarantee as renderResponse: recreate the shared
+  // panel if it currently exists in SSE (scripts-enabled) mode.
+  if (panel && ssePanelScripts) {
+    const stale = panel;
+    panel = undefined;
+    ssePanelScripts = false;
+    stale.dispose();
+  }
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'reqit.response',
@@ -197,8 +317,10 @@ export function renderGrpcInfo(
       vscode.ViewColumn.Beside,
       { enableScripts: false, retainContextWhenHidden: true },
     );
-    panel.onDidDispose(() => {
-      panel = undefined;
+    const created = panel;
+    created.onDidDispose(() => {
+      // Ownership guard: never clear a slot a newer panel already took.
+      if (panel === created) panel = undefined;
     });
     context.subscriptions.push(panel);
   }
@@ -256,68 +378,4 @@ function renderPreflight(report: PreflightReport): string {
     .join('');
   const list = items.length === 0 ? '' : `<ul>${items}</ul>`;
   return `<div class="preflight ${cls}"><strong>Preflight:</strong> ${escape(report.summary)}${list}</div>`;
-}
-
-function prettyEventData(data: string): string {
-  const trimmed = data.trim();
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    try {
-      return JSON.stringify(JSON.parse(trimmed), null, 2);
-    } catch {
-      return data;
-    }
-  }
-  return data;
-}
-
-function sseHtml(s: SseRenderState): string {
-  const headerLines = Object.entries(s.headers)
-    .map(([k, v]) => `${escape(k)}: ${escape(v)}`)
-    .join('\n');
-  const statusLine = s.status === 0 ? 'NETWORK ERROR' : `HTTP ${s.status}`;
-  const rows = s.events
-    .map((e) => {
-      const kind = e.event.type;
-      const id = e.event.lastEventId ?? '';
-      const body = prettyEventData(e.event.data);
-      return `<div class="sse-event">
-        <div class="sse-event-head">
-          <span class="sse-index">#${e.meta.index}</span>
-          <span class="sse-kind">${escape(kind)}</span>
-          ${id ? `<span class="sse-id">id=${escape(id)}</span>` : ''}
-          <span class="sse-elapsed">${e.meta.elapsedMs}ms</span>
-          <span class="sse-ts">${escape(e.timestamp)}</span>
-        </div>
-        <pre class="sse-data">${escape(body)}</pre>
-      </div>`;
-    })
-    .join('');
-  const streamState = s.streaming
-    ? `<span class="sse-state sse-live">\u25CF streaming (${s.events.length} events)</span>`
-    : `<span class="sse-state sse-done">\u25A0 ${escape(s.stopReason ?? 'end-of-stream')} (${s.events.length} events)</span>`;
-  const noteBlock = s.note ? `<div class="sse-note">${escape(s.note)}</div>` : '';
-  return `<!doctype html>
-<html><head><meta charset="utf-8"><style>
-  body { font-family: var(--vscode-editor-font-family, monospace); padding: 12px; }
-  h2 { margin: 0 0 4px 0; font-size: 14px; }
-  h3 { margin: 8px 0 4px 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  pre { white-space: pre-wrap; word-break: break-word; background: var(--vscode-textBlockQuote-background); padding: 8px; border-radius: 4px; }
-  .meta { color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 8px; }
-  .sse-note { background: var(--vscode-inputValidation-warningBackground, #4d3800); color: var(--vscode-inputValidation-warningForeground, #fff); padding: 8px 10px; border-radius: 4px; margin: 8px 0; font-size: 12px; }
-  .sse-state { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 8px; }
-  .sse-live { background: var(--vscode-inputValidation-infoBackground, #062f4a); color: var(--vscode-inputValidation-infoForeground, #cfe8ff); }
-  .sse-done { background: var(--vscode-textBlockQuote-background); color: var(--vscode-descriptionForeground); }
-  .sse-event { border: 1px solid var(--vscode-panel-border, transparent); border-radius: 4px; margin: 6px 0; padding: 6px 8px; }
-  .sse-event-head { font-size: 12px; color: var(--vscode-descriptionForeground); display: flex; gap: 10px; flex-wrap: wrap; }
-  .sse-kind { color: var(--vscode-textLink-foreground); font-weight: bold; }
-  .sse-data { margin: 4px 0 0 0; font-size: 12px; }
-</style></head><body>
-  <h2>${escape(s.request.method)} ${escape(s.request.url)} ${streamState}</h2>
-  <div class="meta">${escape(statusLine)} \u00B7 ${s.elapsedMs}ms since start</div>
-  ${noteBlock}
-  <h2>Headers</h2>
-  <pre>${escape(headerLines)}</pre>
-  <h2>Events</h2>
-  ${rows || '<div class="meta">(no events yet)</div>'}
-</body></html>`;
 }

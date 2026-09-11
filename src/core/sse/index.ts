@@ -40,6 +40,7 @@ export {
 export {
   buildSseTranscriptFileName,
   serializeSseTranscript,
+  pickSseTranscriptRecord,
   type SseTranscriptRecord,
 } from './transcript.js';
 export {
@@ -47,6 +48,14 @@ export {
   closeOnAbort,
   type SseStreamHandle,
 } from './streamControl.js';
+export {
+  buildSseStreamHtml,
+  isSseStopMessage,
+  SSE_STOP_MESSAGE_TYPE,
+  type SseStreamViewEvent,
+  type SseStreamViewModel,
+  type SseStreamViewOptions,
+} from './streamView.js';
 export {
   sanitizeSseErrorText,
   SSE_ERROR_TEXT_MAX,

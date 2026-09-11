@@ -7,6 +7,33 @@ export interface SseTranscriptRecord {
   timestampMs: number;
 }
 
+/**
+ * THE capture boundary used by every production driver (extension host,
+ * future CLI/MCP): builds a transcript record from a dispatched event via
+ * an explicit allowlist. Anything ELSE that happens to be in scope at the
+ * call site — request headers, auth material, URLs with credentials — is
+ * structurally incapable of entering a record, because only these three
+ * fields are copied. Extra input properties are dropped, not merged.
+ */
+export function pickSseTranscriptRecord(input: {
+  event: SseEvent;
+  index: number;
+  timestampMs: number;
+  [extra: string]: unknown;
+}): SseTranscriptRecord {
+  const e = input.event;
+  return {
+    event: {
+      type: e.type,
+      data: e.data,
+      ...(e.lastEventId !== undefined ? { lastEventId: e.lastEventId } : {}),
+      ...(typeof e.retry === 'number' ? { retry: e.retry } : {}),
+    },
+    index: input.index,
+    timestampMs: input.timestampMs,
+  };
+}
+
 function pad2(value: number): string {
   return value.toString().padStart(2, '0');
 }
