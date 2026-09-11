@@ -39,7 +39,10 @@ describe('SSE transcript secret safety (issue #46)', () => {
     // Realistic hostile-ish capture call: the extension host has the sent
     // request (with bearer auth) in scope at onEvent time. Production code
     // passes it alongside the event; the allowlist must drop it.
-    const captured = pickSseTranscriptRecord({
+    // ONE input object is built, asserted to carry the secret, and THAT
+    // SAME object is passed to the production boundary — the non-vacuity
+    // control and the captured input cannot diverge.
+    const input = {
       event: { type: 'message', data: '{"delta":"hi"}', lastEventId: 'evt-1' },
       index: 0,
       timestampMs: 1_700_000_000_000,
@@ -47,15 +50,21 @@ describe('SSE transcript secret safety (issue #46)', () => {
       // refactor regression would produce if capture stopped allowlisting.
       headers: { authorization: `Bearer ${secret}` },
       url: `https://user:${secret}@api.example.com/v1/stream`,
-    });
+    };
 
-    // Non-vacuity: the secret really was in the input object.
-    expect(JSON.stringify(captured)).toBeDefined();
-    const rawLike = JSON.stringify({
-      event: { type: 'message', data: '{"delta":"hi"}', lastEventId: 'evt-1' },
-      authorization: `Bearer ${secret}`,
-    });
-    expect(rawLike).toContain(secret);
+    // Non-vacuity: the secret really is inside the exact object the
+    // production capture boundary receives.
+    const rawInput = JSON.stringify(input);
+    expect(rawInput).toContain(secret);
+    expect(rawInput.toLowerCase()).toContain('authorization');
+
+    const captured = pickSseTranscriptRecord(input);
+
+    // Directly assert the RECORD the boundary produced is clean — a pick
+    // regression (merging extras) is caught here even though the on-disk
+    // serializer would also drop them (defense in depth).
+    expect(Object.keys(captured).sort()).toEqual(['event', 'index', 'timestampMs']);
+    expect(JSON.stringify(captured)).not.toContain(secret);
 
     const out = serializeSseTranscript([
       captured,

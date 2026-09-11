@@ -172,7 +172,7 @@ export function buildSseStreamHtml(
   }
   const nonce = opts.nonce;
   const headerLines = Object.entries(s.headers)
-    .map(([k, v]) => `${escape(k)}: ${escape(v)}`)
+    .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
   // Only an exact 0 means the network-error convention; other non-finite
   // values coerce to "HTTP 0" so garbage can never render as-is.

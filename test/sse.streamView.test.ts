@@ -226,6 +226,16 @@ describe('buildSseStreamHtml — escaping (untrusted event data)', () => {
     expect(out).not.toContain('<script>bad');
   });
 
+  it('escapes header content EXACTLY once (entity-safe values render, not double-escaped mush)', () => {
+    const out = html(model({ headers: { 'x-a': 'a&b', 'x-b': '<t>' } }));
+    // Single-escaped presentation: the browser shows `a&b` and `<t>`.
+    expect(out).toContain('a&amp;b');
+    expect(out).toContain('&lt;t&gt;');
+    // A second escape layer would render literal `&amp;amp;` to the user.
+    expect(out).not.toContain('&amp;amp;');
+    expect(out).not.toContain('&amp;lt;');
+  });
+
   it('escapes notes (directive diagnostics, until-errors)', () => {
     const out = html(model({ note: '<script>note</script>' }));
     expect(out).not.toContain('<script>note');
@@ -292,13 +302,20 @@ describe('isSseStopMessage — host-side message validation', () => {
     expect(isSseStopMessage(obj, TOK)).toBe(false);
   });
 
-  it('rejects a constant-folded token via getter weirdness (own enumerable data props only)', () => {
+  it('accepts an accessor-defined token when the value matches (contract is value-based, not descriptor-based)', () => {
     const obj = { type: SSE_STOP_MESSAGE_TYPE } as Record<string, unknown>;
     Object.defineProperty(obj, 'token', { get: () => TOK, enumerable: true });
-    // DefineProperty created an accessor; Reflect.ownKeys sees it, but the
-    // value read must still match. Accessor tokens ARE accepted if they
-    // return the right value — this asserts the contract stays value-based.
+    // DefineProperty created an accessor; Reflect.ownKeys sees it, and the
+    // value read matches. Accessor tokens ARE accepted BY DESIGN — the
+    // contract is value-based (VS Code structured-clone messages never
+    // carry accessors; this documents the deliberate boundary).
     expect(isSseStopMessage(obj, TOK)).toBe(true);
+  });
+
+  it('rejects an accessor-defined token when the value does not match', () => {
+    const obj = { type: SSE_STOP_MESSAGE_TYPE } as Record<string, unknown>;
+    Object.defineProperty(obj, 'token', { get: () => 'wrongtoken', enumerable: true });
+    expect(isSseStopMessage(obj, TOK)).toBe(false);
   });
 
   it('accepts only the canonical prototype with exactly the two own keys', () => {
