@@ -543,7 +543,11 @@ function findPlaceholders(source: string): Placeholder[] {
           let m = k + 1;
           while (m < source.length && source[m] !== q) m += 1;
           if (m >= source.length) {
-            abandoned = true; // unterminated quoted span → abandons the rest
+            // Unterminated quoted span reaches EOF: abandon through the end
+            // of input. Advance j so recovery cannot resume after a nested
+            // `}}` inside the still-open span.
+            j = m;
+            abandoned = true;
             break;
           }
           j = m + 1; // past the closing quote; `]` follows in the key text

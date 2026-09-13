@@ -271,6 +271,12 @@ describe('resolveChainText / resolveChainRequest', () => {
       ['{{}} {{login.response.status}}', '{{}} 201'],
       // unterminated bracket-quote that swallows a later placeholder
       ["{{oops ['unclosed {{login.response.status}}", "{{oops ['unclosed {{login.response.status}}"],
+      // unterminated bracket-quote must abandon through END OF INPUT: two
+      // later placeholders, neither may resolve
+      [
+        "{{oops ['unclosed {{first}} {{login.response.status}}",
+        "{{oops ['unclosed {{first}} {{login.response.status}}",
+      ],
       // bracket + lone-brace interaction
       ['{{a[}b}} {{login.response.status}}', '{{a[}b}} 201'],
     ];
