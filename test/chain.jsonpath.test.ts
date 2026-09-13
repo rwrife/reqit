@@ -178,6 +178,21 @@ describe('evaluateJsonPath', () => {
     if ('found' in r && !r.found) expect(r.error).toContain('depth');
   });
 
+  it('rejects forged non-natural index segments (negative, fractional, NaN)', () => {
+    const doc2 = [10, 20];
+    const bad: Array<[JsonPathSegment, string]> = [
+      [{ kind: 'index', value: -1 }, 'negative'],
+      [{ kind: 'index', value: 1.5 }, 'integer'],
+      [{ kind: 'index', value: NaN }, 'integer'],
+      [{ kind: 'index', value: Infinity }, 'integer'],
+    ];
+    for (const [seg, needle] of bad) {
+      const r = evaluateJsonPath(doc2, [seg]);
+      expect(r).toHaveProperty('found', false);
+      if ('found' in r && !r.found) expect(r.error.toLowerCase()).toContain(needle);
+    }
+  });
+
   it('rejects prototype keys so chains cannot reach Object.prototype', () => {
     const doc3 = JSON.parse('{"a":1}') as Record<string, unknown>;
     expect(Object.prototype.hasOwnProperty.call(doc3, 'toString')).toBe(false);

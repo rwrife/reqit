@@ -166,6 +166,12 @@ export function evaluateJsonPath(doc: unknown, segments: readonly JsonPathSegmen
       traversed = `${traversed}.${seg.name}`;
       continue;
     }
+    if (!Number.isSafeInteger(seg.value) || seg.value < 0) {
+      return {
+        found: false,
+        error: `Invalid index [${String(seg.value)}] at ${traversed} (must be a non-negative integer)`,
+      };
+    }
     if (!Array.isArray(current)) {
       return {
         found: false,

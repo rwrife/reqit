@@ -209,6 +209,97 @@ describe('resolveChainText / resolveChainRequest', () => {
     expect(r.diagnostics[2].message).toMatch(/JSONPath/);
   });
 
+  it('flags incomplete or irregular chain shapes for recorded names (doubled dots, missing parts, digit parts)', () => {
+    const s = store();
+    const r = resolveChainText(
+      '{{login.response}} {{login.response.}} {{login.response..status}} {{login.response.1bad}} {{login.request}}',
+      s,
+    );
+    expect(r.diagnostics.map((d) => d.variable)).toEqual([
+      'login.response',
+      'login.response.',
+      'login.response..status',
+      'login.response.1bad',
+      'login.request',
+    ]);
+    for (const d of r.diagnostics) expect(d.message).not.toBe('');
+    // text passes through byte-identically (literals stay)
+    expect(r.text).toBe(
+      '{{login.response}} {{login.response.}} {{login.response..status}} {{login.response.1bad}} {{login.request}}',
+    );
+  });
+
+  it('does not treat same-prefix namespaces as chain shapes', () => {
+    const s = store();
+    // `login.responseX` / `loginx.requestY` are ordinary dotted env names.
+    const r = resolveChainText('{{login.responseX}} {{loginx.requestY}}', s);
+    expect(r.diagnostics).toEqual([]);
+    expect(r.text).toBe('{{login.responseX}} {{loginx.requestY}}');
+  });
+
+  it('parses a header name containing an apostrophe (quote mode is bracket-scoped only)', () => {
+    const s2 = createChainStore();
+    s2.recordResponse('login', {
+      status: 200,
+      headers: { "X-O'Brien": 'aye' },
+      body: '{}',
+    });
+    const r = resolveChainText("{{login.response.headers.X-O'Brien}}", s2);
+    expect(r.text).toBe('aye');
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it('fails closed on candidates with unterminated quotes or lone braces (byte-identical pass-through)', () => {
+    const s = store();
+    const cases = [
+      "{{broken ' {{login.response.status}}",
+      '{{a}b}} {{login.response.status}}',
+      "{{oops [}} {{login.response.status}}",
+      '{{}} {{login.response.status}}',
+    ];
+    for (const input of cases) {
+      const r = resolveChainText(input, s);
+      // The malformed candidate is skipped as a whole region; the trailing
+      // valid ref after the candidate still resolves, and the malformed
+      // region itself is byte-identical.
+      const malformedRegion = input.slice(0, input.indexOf('{{login.response.status}}'));
+      expect(r.text.startsWith(malformedRegion), input).toBe(true);
+      expect(r.diagnostics.filter((d) => malformedRegion.includes(d.variable))).toEqual([]);
+    }
+  });
+
+  it('resolves adjacent placeholders independently', () => {
+    const s = store();
+    const r = resolveChainText('{{login.response.status}}{{login.response.status}}', s);
+    expect(r.text).toBe('201201');
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it('parses a recorded body at most once per resolution pass', async () => {
+    const { vi } = await import('vitest');
+    const s = store();
+    const spy = vi.spyOn(JSON, 'parse');
+    resolveChainText(
+      '{{login.response.body.$.meta.count}} {{login.response.body.$.meta.flag}} {{login.response.body.$.meta.nothing}}',
+      s,
+    );
+    const calls = spy.mock.calls.length;
+    spy.mockRestore();
+    expect(calls).toBe(1);
+  });
+
+  it('deep-copies object capture values on record and retrieval', () => {
+    const s = store();
+    const obj = { nested: { tok: 'original' } };
+    const errs = s.recordCaptures([{ name: 'objcap', value: obj, secret: false }]);
+    expect(errs).toEqual([]);
+    obj.nested.tok = 'tampered-source';
+    const got = s.getCapture('objcap')!;
+    expect((got.value as typeof obj).nested.tok).toBe('original');
+    (got.value as typeof obj).nested.tok = 'tampered-read';
+    expect((s.getCapture('objcap')!.value as typeof obj).nested.tok).toBe('original');
+  });
+
   it('leaves malformed chain-shaped refs to UNKNOWN names for env substitution', () => {
     const s = store();
     // `checkout` was never recorded and the ref is malformed chain-shaped:

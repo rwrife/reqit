@@ -33,13 +33,8 @@ export type ChainReference =
 const CHAIN_REF_RE =
   /^([A-Za-z_][A-Za-z0-9_]*)\.(response|request)\.(status|headers|body)(?:\.(.+))?$/;
 
-/**
- * Chain-SHAPED detector: `<ident>.response.<part>…` / `<ident>.request.<part>…`.
- * Used to distinguish a malformed chain reference bound to a RECORDED name
- * (fail loudly) from an ordinary dotted env-var name (pass through).
- */
-const CHAIN_SHAPE_RE =
-  /^([A-Za-z_][A-Za-z0-9_]*)(?:\.(response|request)(?:\.([A-Za-z_][A-Za-z0-9_]*)(.*))?)?$/;
+/** Recorded namespaces that mark a reference as chain-intent. */
+const CHAIN_NAMESPACES: readonly ('response' | 'request')[] = ['response', 'request'];
 
 /**
  * Parse one `{{...}}` inner reference into a chain reference, or return
@@ -218,12 +213,29 @@ export interface ChainStore {
 }
 
 /**
+ * Deep-copy a capture value defensively on store/retrieve. Uses structured
+ * clone where available for JSON-shaped data; primitives and anything
+ * structuredClone rejects (functions, symbols, class instances) are stored
+ * by reference — captures come from `applyCapture`, whose values are
+ * always JSON-parsed document fragments.
+ */
+function cloneCaptureValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Create an empty per-run chain store. Names are matched case-sensitively
  * (they are identifiers); response headers are matched case-insensitively.
  * Nothing here persists to disk and no values are treated as secrets by the
  * store itself — redaction is the caller's responsibility (see `secret`
- * flags on captures). Getters return defensive copies so a caller mutating
- * a returned record can never rewrite stored history.
+ * flags on captures). Getters return defensive copies (capture values are
+ * deep-copied for JSON-shaped data) so a caller mutating a returned record
+ * can never rewrite stored history.
  */
 export function createChainStore(): ChainStore {
   const requests = new Map<string, ChainRequestRecord>();
@@ -267,13 +279,13 @@ export function createChainStore(): ChainStore {
           continue;
         }
         batchSeen.add(cap.name);
-        captures.set(cap.name, { value: cap.value, secret: cap.secret });
+        captures.set(cap.name, { value: cloneCaptureValue(cap.value), secret: cap.secret });
       }
       return diagnostics;
     },
     getCapture(name) {
       const rec = captures.get(name);
-      return rec ? { value: rec.value, secret: rec.secret } : undefined;
+      return rec ? { value: cloneCaptureValue(rec.value), secret: rec.secret } : undefined;
     },
     captureNames() {
       return [...captures.keys()];
@@ -363,6 +375,15 @@ function parsedBody(
  *  - a malformed chain reference bound to a RECORDED name -> `{ malformed }`
  *    with an actionable message (fails loudly, never silently passed to env)
  *  - anything else -> `null` (ordinary env/built-in reference, passed through)
+ *
+ * Chain intent is recognized by EXACT namespace segments:
+ * `<name>.response.…` / `<name>.request.…` where `<name>` has a recorded
+ * entry under that namespace. Any non-valid remainder then produces a
+ * diagnostic (missing part, empty/doubled dots, unknown part, bad path),
+ * so `login.response`, `login.response.`, `login.response..status`, and
+ * `login.response.1bad` can never hide as env variables. A segment like
+ * `responseX` is NOT a namespace, so `login.responseX` stays an ordinary
+ * dotted env name.
  */
 export function classifyChainReference(
   inner: string,
@@ -371,22 +392,38 @@ export function classifyChainReference(
   const ref = parseChainReference(inner);
   if (ref !== null) return { ref };
 
-  const m = CHAIN_SHAPE_RE.exec(inner);
-  if (!m) return null;
-  const name = m[1];
-  const kind = m[2] as 'response' | 'request' | undefined;
-  const part = m[3];
-  if (kind === undefined || part === undefined) return null;
+  const firstDot = inner.indexOf('.');
+  if (firstDot <= 0) return null;
+  const name = inner.slice(0, firstDot);
+  if (!NAME_RE.test(name)) return null;
+  const rest = inner.slice(firstDot + 1);
+  const ns = CHAIN_NAMESPACES.find((n) => rest === n || rest.startsWith(`${n}.`));
+  if (ns === undefined) return null;
 
-  const recorded =
-    kind === 'response' ? store.getResponse(name) !== undefined : store.getRequest(name) !== undefined;
-  if (!recorded) return null; // indistinguishable from a dotted env-var name
+  const recorded = ns === 'response' ? store.getResponse(name) : store.getRequest(name);
+  if (recorded === undefined) return null; // indistinguishable from a dotted env-var name
 
-  if (kind === 'request') {
+  const remainder = rest.slice(ns.length + 1); // text after `<name>.<ns>.`
+  const expected =
+    ns === 'request'
+      ? `'${name}.request.body.$.path'`
+      : `'${name}.response.status' | '${name}.response.headers.<Header-Name>' | '${name}.response.body.$.path'`;
+  if (ns === 'request') {
+    if (remainder === '' ) {
+      return { malformed: `request chaining needs a body path: expected ${expected} (got '${inner}')` };
+    }
+    const part = remainder.split('.')[0];
     if (part !== 'body') {
-      return { malformed: `request chaining only supports '${name}.request.body.$.path' (got '${inner}')` };
+      return { malformed: `request chaining only supports 'body' (got '${inner}'; expected ${expected})` };
     }
     return { malformed: `request body reference needs a JSONPath starting with '$': '${inner}'` };
+  }
+  if (remainder === '') {
+    return { malformed: `response reference missing a part: expected ${expected} (got '${inner}')` };
+  }
+  const part = remainder.split('.')[0];
+  if (part === '') {
+    return { malformed: `empty chain part in '${inner}' (expected ${expected})` };
   }
   if (part === 'status') {
     return { malformed: `'${name}.response.status' takes no sub-path (got '${inner}')` };
@@ -398,7 +435,7 @@ export function classifyChainReference(
     return { malformed: `response body reference needs a JSONPath starting with '$': '${inner}'` };
   }
   return {
-    malformed: `unknown chain part '${part}' for '${name}' (expected response.status | response.headers.<H> | response.body.$.path | request.body.$.path)`,
+    malformed: `unknown chain part '${part}' for '${name}.response' (expected ${expected})`,
   };
 }
 
@@ -440,12 +477,19 @@ function resolveReference(ref: ChainReference, ctx: ResolutionContext): { value:
 }
 
 /**
- * Scan `source` for `{{ ... }}` placeholders. Unlike a naive `[^}]+` regex,
- * this understands QUOTED spans inside a placeholder, so a chain body path
- * like `login.response.body.$['weird}key']` survives intact. Returns each
- * placeholder as `{ start, end, full, inner }` (inner is already trimmed);
- * text between placeholders is untouched and re-emitted verbatim, so
- * pass-through references are byte-identical to the input.
+ * Scan `source` for `{{ ... }}` placeholders.
+ *
+ * Rules (fail-closed, no nested re-scan inside a bad candidate):
+ *  - A candidate opens at `{{` and must close at the FIRST unquoted `}}`.
+ *  - Quote mode is entered ONLY for a quote immediately after a JSONPath
+ *    `[` opener (or its whitespace) following `.` or `[` context inside the
+ *    candidate; a bare apostrophe in an env/header name (e.g. `X-O'Brien`)
+ *    does NOT start a quoted span and cannot hide a `}}` terminator.
+ *  - Inside a real quoted span, `]` and `}` are ordinary key characters;
+ *    an unterminated quoted span abandons the candidate ENTIRELY (scan
+ *    resumes after the abandoned `{{`, never inside the candidate).
+ *  - A lone `}` inside a candidate (like `{a}b}}`) abandons the candidate
+ *    the same way, so malformed text passes through byte-identically.
  */
 interface Placeholder {
   start: number;
@@ -458,38 +502,61 @@ function findPlaceholders(source: string): Placeholder[] {
   const out: Placeholder[] = [];
   let i = 0;
   while (i < source.length - 1) {
-    if (source[i] === '{' && source[i + 1] === '{') {
-      let j = i + 2;
-      let closed = -1;
-      while (j < source.length) {
-        const c = source[j];
-        if (c === "'" || c === '"') {
-          // Skip to the matching quote; an unterminated quote cannot form a
-          // valid placeholder, so bail out of this candidate.
-          let k = j + 1;
-          while (k < source.length && source[k] !== c) k += 1;
-          if (k >= source.length) break;
-          j = k + 1;
-          continue;
-        }
-        if (c === '}' && source[j + 1] === '}') {
+    if (!(source[i] === '{' && source[i + 1] === '{')) {
+      i += 1;
+      continue;
+    }
+    // Candidate opened at i. Scan for the first unquoted `}}`.
+    let j = i + 2;
+    let closed = -1;
+    let abandoned = false;
+    while (j < source.length) {
+      const c = source[j];
+      if (c === '}') {
+        if (source[j + 1] === '}') {
           closed = j;
           break;
         }
-        j += 1;
+        // lone `}` — not valid placeholder content; abandon candidate
+        abandoned = true;
+        break;
       }
-      if (closed >= 0) {
-        const inner = source.slice(i + 2, closed).trim();
-        if (inner.length > 0) {
-          out.push({ start: i, end: closed + 2, full: source.slice(i, closed + 2), inner });
+      if (c === '[') {
+        // possible JSONPath quoted key: '[' + optional spaces + quote
+        let k = j + 1;
+        while (k < source.length && source[k] === ' ') k += 1;
+        const q = source[k];
+        if (q === "'" || q === '"') {
+          let m = k + 1;
+          while (m < source.length && source[m] !== q) {
+            // `}}` inside an unterminated quote abandons the candidate
+            if (source[m] === '}' && source[m + 1] === '}') break;
+            m += 1;
+          }
+          if (m >= source.length || (source[m] === '}' && source[m + 1] === '}')) {
+            abandoned = true; // unterminated quoted span
+            break;
+          }
+          j = m + 1; // past the closing quote; `]` follows in the key text
+          continue;
         }
-        i = closed + 2;
+        j = k; // plain subscript; continue from after '['
         continue;
       }
+      j += 1;
+    }
+    if (abandoned || closed < 0) {
+      // Skip the whole candidate region: resume just after this `{{`.
+      // Re-scanning inside malformed text could resolve a nested
+      // placeholder that should pass through untouched.
       i += 2;
       continue;
     }
-    i += 1;
+    const inner = source.slice(i + 2, closed).trim();
+    if (inner.length > 0) {
+      out.push({ start: i, end: closed + 2, full: source.slice(i, closed + 2), inner });
+    }
+    i = closed + 2;
   }
   return out;
 }

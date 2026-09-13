@@ -19,7 +19,7 @@ Content-Type: application/json
 
 # @name me
 GET {{host}}/me
-Authorization: Bearer {{logi...}}
+Authorization: Bearer {{login.response.body.$.access_token}}
 ```
 
 ## Chain references
@@ -41,16 +41,23 @@ actionable diagnostic (`no recorded response for 'login' …`) and the literal
 `{{...}}` stays in place so the request fails loudly rather than sending a
 raw placeholder.
 
-A **malformed** chain-shaped reference bound to a **recorded** name
-(for example `{{login.response.status.extra}}` or `{{login.request.status}}`
-once `login` has run) is likewise reported with an actionable diagnostic and
-left literal — it never silently passes through to env substitution.
-Chain-shaped references to names that were **never recorded** stay silent so
-ordinary dotted env-var names keep working.
+A **malformed** chain-shaped reference bound to a **recorded** name is
+reported with an actionable diagnostic and left literal — it never silently
+passes through to env substitution. Chain intent is recognized by exact
+namespace segments: anything under `login.response.…` or `login.request.…`
+once `login` has run (including incomplete or irregular shapes such as
+`{{login.response}}`, `{{login.response.}}`, `{{login.response..status}}`,
+`{{login.response.1bad}}`) produces a diagnostic; same-prefix names that are
+not exact namespaces (`login.responseX`) and references to names that were
+**never recorded** stay silent so ordinary dotted env-var names keep working.
 
-Placeholder scanning is quote-aware: a body path may contain a quoted key
-with `}` inside it (`{{login.response.body.$['weird}key']}` resolves), and a
-quoted key may contain `]`.
+Placeholder scanning is quote-aware in a bracket-scoped way: a body path may
+contain a quoted key with `}` or `]` inside it
+(`{{login.response.body.$['weird}key']}` resolves), while an apostrophe in an
+ordinary env/header name (`X-O'Brien`) does NOT start a quoted span. A
+malformed candidate (unterminated quoted span or a lone `}` inside `{{ … }}`)
+is abandoned as a whole region and passes through byte-identically; the
+scanner never resolves a placeholder nested inside abandoned text.
 
 ## JSONPath subset
 
