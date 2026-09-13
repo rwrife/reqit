@@ -479,23 +479,34 @@ function resolveReference(ref: ChainReference, ctx: ResolutionContext): { value:
 /**
  * Scan `source` for `{{ ... }}` placeholders.
  *
- * Rules (fail-closed, no nested re-scan inside a bad candidate):
- *  - A candidate opens at `{{` and must close at the FIRST unquoted `}}`.
- *  - Quote mode is entered ONLY for a quote immediately after a JSONPath
- *    `[` opener (or its whitespace) following `.` or `[` context inside the
- *    candidate; a bare apostrophe in an env/header name (e.g. `X-O'Brien`)
- *    does NOT start a quoted span and cannot hide a `}}` terminator.
- *  - Inside a real quoted span, `]` and `}` are ordinary key characters;
- *    an unterminated quoted span abandons the candidate ENTIRELY (scan
- *    resumes after the abandoned `{{`, never inside the candidate).
- *  - A lone `}` inside a candidate (like `{a}b}}`) abandons the candidate
- *    the same way, so malformed text passes through byte-identically.
+ * Rules (fail-closed):
+ *  - A candidate opens at `{{` and must close at the first top-level `}}`.
+ *  - Quote mode is entered ONLY for a quote at a JSONPath `[` opener
+ *    position (`[` + optional spaces + quote); a bare apostrophe in an
+ *    env/header name (e.g. `X-O'Brien`) does NOT start a quoted span and
+ *    cannot affect the `}}` terminator.
+ *  - Inside a real quoted span ONLY the matching quote character closes it,
+ *    so a JSON key may contain `]`, `}`, or even `}}`. An unterminated
+ *    quoted span runs to end-of-input: the ENTIRE remaining text is
+ *    abandoned (returned as untouched text, never rescanned).
+ *  - A lone `}` inside a candidate (e.g. `{a}…`) abandons the candidate:
+ *    scanning resumes AFTER the next `}}` terminator (or at end of input),
+ *    so a placeholder nested inside the abandoned region can never resolve.
+ *    The abandoned region is emitted byte-identically.
+ *  - Empty placeholders (`{{}}`) are skipped and emitted verbatim.
  */
 interface Placeholder {
   start: number;
   end: number;
   full: string;
   inner: string;
+}
+
+function nextDoubleBrace(source: string, from: number): number {
+  for (let k = Math.max(from, 0); k < source.length - 1; k++) {
+    if (source[k] === '}' && source[k + 1] === '}') return k;
+  }
+  return -1;
 }
 
 function findPlaceholders(source: string): Placeholder[] {
@@ -506,7 +517,7 @@ function findPlaceholders(source: string): Placeholder[] {
       i += 1;
       continue;
     }
-    // Candidate opened at i. Scan for the first unquoted `}}`.
+    // Candidate opened at i. Scan for the first top-level `}}`.
     let j = i + 2;
     let closed = -1;
     let abandoned = false;
@@ -527,30 +538,36 @@ function findPlaceholders(source: string): Placeholder[] {
         while (k < source.length && source[k] === ' ') k += 1;
         const q = source[k];
         if (q === "'" || q === '"') {
+          // Only the matching quote closes the span; `]`, `}`, `}}` are
+          // ordinary key characters inside it.
           let m = k + 1;
-          while (m < source.length && source[m] !== q) {
-            // `}}` inside an unterminated quote abandons the candidate
-            if (source[m] === '}' && source[m + 1] === '}') break;
-            m += 1;
-          }
-          if (m >= source.length || (source[m] === '}' && source[m + 1] === '}')) {
-            abandoned = true; // unterminated quoted span
+          while (m < source.length && source[m] !== q) m += 1;
+          if (m >= source.length) {
+            abandoned = true; // unterminated quoted span → abandons the rest
             break;
           }
           j = m + 1; // past the closing quote; `]` follows in the key text
           continue;
         }
-        j = k; // plain subscript; continue from after '['
+        j = k; // plain subscript; continue scanning from after '['
         continue;
       }
       j += 1;
     }
-    if (abandoned || closed < 0) {
-      // Skip the whole candidate region: resume just after this `{{`.
-      // Re-scanning inside malformed text could resolve a nested
-      // placeholder that should pass through untouched.
-      i += 2;
+    if (abandoned) {
+      if (closed < 0 && j >= source.length) {
+        // unterminated quoted span consumed everything
+        break;
+      }
+      // Skip the whole abandoned region: resume after the next `}}`
+      // terminator at/after the abandon point. Never resume INSIDE the
+      // region — a nested placeholder there must not resolve.
+      const term = nextDoubleBrace(source, j);
+      i = term < 0 ? source.length : term + 2;
       continue;
+    }
+    if (closed < 0) {
+      break; // unclosed candidate: nothing left that can resolve
     }
     const inner = source.slice(i + 2, closed).trim();
     if (inner.length > 0) {

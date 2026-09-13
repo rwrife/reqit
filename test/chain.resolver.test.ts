@@ -251,21 +251,52 @@ describe('resolveChainText / resolveChainRequest', () => {
 
   it('fails closed on candidates with unterminated quotes or lone braces (byte-identical pass-through)', () => {
     const s = store();
-    const cases = [
-      "{{broken ' {{login.response.status}}",
-      '{{a}b}} {{login.response.status}}',
-      "{{oops [}} {{login.response.status}}",
-      '{{}} {{login.response.status}}',
+    // Exact full-output assertions: nothing nested inside an abandoned
+    // candidate may resolve, and text outside the abandoned region is
+    // processed normally.
+    const cases: Array<[string, string]> = [
+      // bracket-scoped unterminated quote: whole region literal, incl. nested ref
+      ["{{broken [' {{login.response.status}}", "{{broken [' {{login.response.status}}"],
+      // bare apostrophe: candidate closes at the nested ref's `}}`, classify
+      // fails, whole thing passes through byte-identically
+      ["{{broken ' {{login.response.status}}", "{{broken ' {{login.response.status}}"],
+      // lone `}` before nested ref: region skip covers the nested ref too
+      ['{{a} {{login.response.status}}', '{{a} {{login.response.status}}'],
+      // lone `}` with in-region terminator BEFORE nested ref: region skips to
+      // its own `}}`, trailing valid ref resolves normally
+      ['{{a}b}} {{login.response.status}}', '{{a}b}} 201'],
+      // bracket + immediate terminator: own placeholder passthrough, nested resolves
+      ['{{oops [}} {{login.response.status}}', '{{oops [}} 201'],
+      // empty placeholder skipped, valid ref resolves
+      ['{{}} {{login.response.status}}', '{{}} 201'],
+      // unterminated bracket-quote that swallows a later placeholder
+      ["{{oops ['unclosed {{login.response.status}}", "{{oops ['unclosed {{login.response.status}}"],
+      // bracket + lone-brace interaction
+      ['{{a[}b}} {{login.response.status}}', '{{a[}b}} 201'],
     ];
-    for (const input of cases) {
+    for (const [input, expected] of cases) {
       const r = resolveChainText(input, s);
-      // The malformed candidate is skipped as a whole region; the trailing
-      // valid ref after the candidate still resolves, and the malformed
-      // region itself is byte-identical.
-      const malformedRegion = input.slice(0, input.indexOf('{{login.response.status}}'));
-      expect(r.text.startsWith(malformedRegion), input).toBe(true);
-      expect(r.diagnostics.filter((d) => malformedRegion.includes(d.variable))).toEqual([]);
+      expect(r.text, input).toBe(expected);
     }
+  });
+
+  it('passes through bracketed non-chain placeholders untouched', () => {
+    const s = store();
+    const r = resolveChainText('{{a[1]}} and {{a[}}', s);
+    expect(r.text).toBe('{{a[1]}} and {{a[}}');
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it('resolves a quoted JSONPath key containing }}', () => {
+    const s2 = createChainStore();
+    s2.recordResponse('login', {
+      status: 200,
+      headers: {},
+      body: JSON.stringify({ 'a}}b': 'brace' }),
+    });
+    const r = resolveChainText("{{login.response.body.$['a}}b']}}", s2);
+    expect(r.text).toBe('brace');
+    expect(r.diagnostics).toEqual([]);
   });
 
   it('resolves adjacent placeholders independently', () => {

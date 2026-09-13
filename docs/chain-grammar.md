@@ -52,12 +52,15 @@ not exact namespaces (`login.responseX`) and references to names that were
 **never recorded** stay silent so ordinary dotted env-var names keep working.
 
 Placeholder scanning is quote-aware in a bracket-scoped way: a body path may
-contain a quoted key with `}` or `]` inside it
-(`{{login.response.body.$['weird}key']}` resolves), while an apostrophe in an
-ordinary env/header name (`X-O'Brien`) does NOT start a quoted span. A
-malformed candidate (unterminated quoted span or a lone `}` inside `{{ … }}`)
-is abandoned as a whole region and passes through byte-identically; the
-scanner never resolves a placeholder nested inside abandoned text.
+contain a quoted key with `]`, `}`, or even `}}` inside it
+(`{{login.response.body.$['a}}b']}` resolves — only the matching quote closes
+a bracket-opened quoted span), while an apostrophe in an ordinary env/header
+name (`X-O'Brien`) does NOT start a quoted span. A malformed candidate — a
+lone `}` inside `{{ … }}`, or an unterminated bracket-quoted span — is
+abandoned as a whole region: scanning resumes only after that region's `}}`
+terminator (or at end of input for an unterminated span), so a placeholder
+nested inside abandoned text can never resolve and the region passes through
+byte-identically.
 
 ## JSONPath subset
 
