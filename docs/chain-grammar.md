@@ -19,7 +19,7 @@ Content-Type: application/json
 
 # @name me
 GET {{host}}/me
-Authorization: Bearer {{login.r…}}
+Authorization: Bearer {{logi...}}
 ```
 
 ## Chain references
@@ -41,21 +41,47 @@ actionable diagnostic (`no recorded response for 'login' …`) and the literal
 `{{...}}` stays in place so the request fails loudly rather than sending a
 raw placeholder.
 
+A **malformed** chain-shaped reference bound to a **recorded** name
+(for example `{{login.response.status.extra}}` or `{{login.request.status}}`
+once `login` has run) is likewise reported with an actionable diagnostic and
+left literal — it never silently passes through to env substitution.
+Chain-shaped references to names that were **never recorded** stay silent so
+ordinary dotted env-var names keep working.
+
+Placeholder scanning is quote-aware: a body path may contain a quoted key
+with `}` inside it (`{{login.response.body.$['weird}key']}` resolves), and a
+quoted key may contain `]`.
+
 ## JSONPath subset
 
 Deliberately bounded so hostile imported data cannot cause unbounded scans:
 
 - `$` — root
 - `.key` — key of `[A-Za-z0-9_-]+`
-- `['key']` / `["key"]` — quoted key (any inner characters)
+- `['key']` / `["key"]` — quoted key (any inner characters except the quote;
+  `]` and `}` are fine)
 - `[3]` — non-negative array index
 - Composable: `$.a.b[0]['c-d']`
 
 Wildcards, slices, filters, recursive descent, and functions are **not**
-supported and are rejected at parse time. Resolution uses strict
-own-property checks, so a path can never climb onto `Object.prototype`
-(`constructor`, `toString`, …). Explicit `null` is a value; a missing key is
-a `Path miss at $.…` diagnostic.
+supported and are rejected at parse time. Hard bounds: at most
+`MAX_JSONPATH_DEPTH` (64) segments per path (enforced at both parse and
+evaluate time), and reserved prototype names — `__proto__`, `constructor`,
+`prototype` — are rejected as segment names at **both** parse and evaluate
+time, so a path can never traverse them even when hostile JSON contains them
+as own keys. Resolution otherwise uses strict own-property checks, so a path
+can never climb onto `Object.prototype` (`toString`, …). Explicit `null` is a
+value; a missing key or an `undefined`-valued own property is a
+`Path miss at $.…` diagnostic; sparse-array holes resolve like JSON
+serialization (`null`).
+
+## Resolution bounds
+
+A single resolution pass (`resolveChainText` / `resolveChainRequest`) acts on
+at most `MAX_CHAIN_REFS_PER_PASS` (100) chain references; the overflow is left
+literal with one `Too many chain references` diagnostic. Recorded JSON bodies
+are parsed at most once per pass (parse cache), so many references into one
+body cannot amplify work to O(references × body size).
 
 ## Capture directives
 
@@ -73,16 +99,25 @@ a `Path miss at $.…` diagnostic.
   surfaced by callers in codelens hovers, history, exports, or clipboard
   output (the redaction boundary itself is part of the pending extension
   slice).
-- Captures are **per-run, in-memory only** (`createChainStore`). Nothing is
+- Captures are **per-run, in-memory only**. `applyCapture` evaluates a
+  directive against a recorded response; `store.recordCaptures()` stores the
+  results and returns diagnostics for invalid or duplicate names (captures
+  must be unique per run; the first occurrence wins). `store.getCapture()` /
+  `captureNames()` retrieve them, and `store.clear()` wipes them. Nothing is
   persisted to disk; there is no `@capture-persist` implementation yet.
+
+Store getters (`getRequest` / `getResponse` / `getCapture`) return defensive
+copies — a caller mutating a returned record can never rewrite stored
+history.
 
 ## Module map
 
 | File                      | Role                                                    |
 | ------------------------- | ------------------------------------------------------- |
 | `src/core/chain/jsonpath.ts` | Parser + evaluator for the bounded JSONPath subset.  |
-| `src/core/chain/resolver.ts` | Reference parsing, chain store, text/request resolution, capture application, name validation. |
+| `src/core/chain/resolver.ts` | Reference parsing/classification, chain store (records + captures), text/request resolution, capture application, name validation. |
 | `src/core/chain/index.ts` | Barrel of the pure surface.                             |
 
 Tests: `test/chain.jsonpath.test.ts`, `test/chain.resolver.test.ts`.
-No new runtime dependencies (zod is already a direct dependency).
+No new runtime dependencies (zod, already a direct dependency, is used for
+capture type validation).

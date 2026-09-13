@@ -180,6 +180,124 @@ describe('resolveChainText / resolveChainRequest', () => {
     expect(r.diagnostics[0].message).toContain('not valid JSON');
   });
 
+  it('diagnoses an invalid recorded RESPONSE body as not valid JSON', () => {
+    const s = createChainStore();
+    s.recordResponse('weird', { status: 200, headers: {}, body: 'not json' });
+    const r = resolveChainText('{{weird.response.body.$.x}}', s);
+    expect(r.text).toBe('{{weird.response.body.$.x}}');
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0].message).toContain('not valid JSON');
+  });
+
+  it('flags chain-shaped references bound to a recorded name even when malformed', () => {
+    const s = store();
+    // `login` is recorded and the ref is chain-shaped, so chain intent wins:
+    // these must NOT silently pass through to env substitution.
+    const r = resolveChainText(
+      '{{login.response.status.extra}} {{login.request.status}} {{login.response.body.notjson.$}}',
+      s,
+    );
+    expect(r.diagnostics.map((d) => d.variable)).toEqual([
+      'login.response.status.extra',
+      'login.request.status',
+      'login.response.body.notjson.$',
+    ]);
+    // literal stays in place
+    expect(r.text).toContain('{{login.response.status.extra}}');
+    expect(r.diagnostics[0].message).toMatch(/status/);
+    expect(r.diagnostics[1].message).toMatch(/request/);
+    expect(r.diagnostics[2].message).toMatch(/JSONPath/);
+  });
+
+  it('leaves malformed chain-shaped refs to UNKNOWN names for env substitution', () => {
+    const s = store();
+    // `checkout` was never recorded and the ref is malformed chain-shaped:
+    // indistinguishable from an ordinary (possibly dotted) env var name, so
+    // it passes through untouched per the pass-through contract.
+    const r = resolveChainText('{{checkout.response.status.extra}}', s);
+    expect(r.text).toBe('{{checkout.response.status.extra}}');
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it('diagnoses validly-shaped refs to unknown names (no recorded response)', () => {
+    const s = store();
+    const r = resolveChainText('{{checkout.response.status}}', s);
+    expect(r.text).toBe('{{checkout.response.status}}');
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0].message).toContain('no recorded response');
+  });
+
+  it('parses a body ref with a quoted key containing }', () => {
+    // 'weird}key' survives the placeholder scan and resolves.
+    const s2 = createChainStore();
+    s2.recordResponse('login', {
+      status: 200,
+      headers: {},
+      body: JSON.stringify({ 'weird}key': 'ok' }),
+    });
+    const r = resolveChainText("{{login.response.body.$['weird}key']}}", s2);
+    expect(r.text).toBe('ok');
+    expect(r.diagnostics).toEqual([]);
+  });
+
+  it('bounds the number of references resolved in one text', () => {
+    const s = store();
+    const hostile = Array(101)
+      .fill('a{{login.response.status}}')
+      .join('');
+    const r = resolveChainText(hostile, s);
+    // First 100 resolve normally; the overflow is left literal with one diagnostic.
+    const resolvedCount = (r.text.match(/a201/g) ?? []).length;
+    expect(resolvedCount).toBe(100);
+    expect(r.text).toContain('a{{login.response.status}}'); // overflow stays literal
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0].message).toMatch(/too many/i);
+  });
+
+  it('returns defensive copies from store getters (no stored-history mutation)', () => {
+    const s = store();
+    const rec = s.getResponse('login')!;
+    rec.status = 500;
+    rec.headers['X-Trace-Id'] = 'tampered';
+    rec.body = 'tampered';
+    const again = s.getResponse('login')!;
+    expect(again.status).toBe(201);
+    expect(again.headers['X-Trace-Id']).toBe('trace-abc');
+    expect(again.body).not.toBe('tampered');
+
+    const req = s.getRequest('login')!;
+    req.body = 'tampered';
+    expect(s.getRequest('login')!.body).not.toBe('tampered');
+  });
+
+  it('stores captures per run with duplicate detection and secret flags', () => {
+    const s = store();
+    const errs = s.recordCaptures([
+      { name: 'token', value: 'tok', secret: true },
+      { name: 'count', value: 7, secret: false },
+    ]);
+    expect(errs).toEqual([]);
+    expect(s.getCapture('token')).toEqual({ value: 'tok', secret: true });
+    expect(s.getCapture('count')).toEqual({ value: 7, secret: false });
+    expect(s.getCapture('absent')).toBeUndefined();
+    expect(s.captureNames().sort()).toEqual(['count', 'token']);
+
+    // duplicate names are rejected per-run (must be caught before wiring)
+    const dup = s.recordCaptures([{ name: 'token', value: 'tok2', secret: true }]);
+    expect(dup).toHaveLength(1);
+    expect(dup[0]).toContain('duplicate capture');
+    expect(s.getCapture('token')).toEqual({ value: 'tok', secret: true }); // first wins
+
+    // invalid names rejected
+    const bad = s.recordCaptures([{ name: '1bad', value: 'x', secret: false }]);
+    expect(bad.some((d) => d.includes('1bad'))).toBe(true);
+
+    // clear() wipes captures too
+    s.clear();
+    expect(s.getCapture('token')).toBeUndefined();
+    expect(s.captureNames()).toEqual([]);
+  });
+
   it('resolveChainRequest covers url, header values, and body', () => {
     const s = store();
     const r = resolveChainRequest(
