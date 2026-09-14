@@ -137,6 +137,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "reqit.filterRequests",
+        "title": "Reqit: Filter Requests by Method",
+        "category": "Reqit",
+        "icon": "$(filter)"
+      },
+      {
         "command": "reqit.selectEnv",
         "title": "Reqit: Select Environment",
         "category": "Reqit"
@@ -183,6 +189,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "reqit.filterRequests",
+          "when": "view == reqit.requests",
+          "group": "navigation"
+        },
         {
           "command": "reqit.refreshRequests",
           "when": "view == reqit.requests",

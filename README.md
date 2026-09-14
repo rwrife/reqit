@@ -66,6 +66,14 @@ Then press `F5` in VS Code to launch an Extension Development Host with Reqit lo
 2. Open the sample file. Click **Send Request** above any request.
 3. Pick an environment from the status-bar item.
 
+### Filter the request explorer
+
+In **Reqit Requests**, use the filter icon or run **Reqit: Filter Requests by Method** from the command palette. Choose an HTTP method or **GRPC**; **All methods** clears the filter, and Escape leaves it unchanged. The view title shows the active method.
+
+Filtering affects request children inside expanded `.http`/`.grpc` files in the first workspace's `.requests/` tree. Folders and files stay visible (this is not a recursive search); a parsed file with no matching requests shows a non-actionable message. Selecting a matching request keeps its original source location and existing send/preview action. Refresh keeps the filter, while reloading the extension resets it.
+
+Only the chosen method is held in memory: this command does not resolve variables/secrets, write workspace files, or send requests. It reuses existing lazy file reads and parsers, without building a new body/response index. Name/URL/text search, CRUD, path-confinement hardening, and 1,000-request performance validation remain tracked in [#56](https://github.com/rwrife/reqit/issues/56); no measured indexing/search-speed claim is made here.
+
 ## Auth examples
 
 `.requests/.http-auth.json`:

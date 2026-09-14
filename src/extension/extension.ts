@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
+import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
 import {
@@ -58,6 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true,
   });
   context.subscriptions.push(treeView);
+  let filterPickerGeneration = 0;
 
   const envManager = new EnvManager(context);
   context.subscriptions.push(envManager);
@@ -93,6 +94,21 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('reqit.filterRequests', async () => {
+      const generation = ++filterPickerGeneration;
+      const choices = [
+        { label: 'All methods', method: undefined as string | undefined },
+        ...[...HTTP_METHODS, 'GRPC'].map((method) => ({ label: method, method })),
+      ];
+      const picked = await vscode.window.showQuickPick(choices, {
+        title: 'Filter requests by method',
+        placeHolder: 'Filters requests inside files; folders and files remain visible',
+        canPickMany: false,
+      });
+      if (generation !== filterPickerGeneration || !picked || !choices.includes(picked)) return;
+      treeProvider.setMethodFilter(picked.method);
+      treeView.description = picked.method ? `Method: ${picked.method}` : undefined;
+    }),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),
     vscode.commands.registerCommand('reqit.stopSseStream', async () => {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { parseHttpFile, type ParsedRequest } from '../core/parser.js';
+import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js';
 
 /**
@@ -12,6 +12,19 @@ import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js'
 export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNode> {
   private readonly _onDidChange = new vscode.EventEmitter<RequestsNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChange.event;
+
+  // A presentation-only filter: never persisted, and never resolves secrets.
+  private methodFilter: string | undefined;
+
+  setMethodFilter(method: unknown): void {
+    if (
+      method !== undefined &&
+      (typeof method !== 'string' ||
+        !(method === 'GRPC' || HTTP_METHODS.some((allowed) => allowed === method)))
+    ) return;
+    this.methodFilter = method;
+    this.refresh();
+  }
 
   refresh(): void {
     this._onDidChange.fire(undefined);
@@ -36,7 +49,18 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
       return listDir(node.uri);
     }
     if (node.kind === 'file') {
-      return parseFileRequests(node.uri);
+      const requests = await parseFileRequests(node.uri);
+      // Read the current filter AFTER I/O so a late read cannot restore an
+      // obsolete selection. Do not renumber nodes: their send anchors survive.
+      const filtered = requests.filter(
+        (request) =>
+          this.methodFilter === undefined ||
+          (request.kind === 'request' && request.request.method === this.methodFilter) ||
+          (request.kind === 'grpc-request' && this.methodFilter === 'GRPC'),
+      );
+      return requests.length > 0 && filtered.length === 0
+        ? [new MessageNode('No requests match the method filter')]
+        : filtered;
     }
     return [];
   }

@@ -1,0 +1,301 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Only the VS Code host boundary is simulated; provider, parsers, nodes and
+// command arguments below are production code.
+const host = vi.hoisted(() => ({
+  readFile: vi.fn(),
+  readDirectory: vi.fn(),
+  stat: vi.fn(),
+  fire: vi.fn(),
+  showQuickPick: vi.fn(),
+  registerCommand: vi.fn(),
+  createTreeView: vi.fn(),
+}));
+vi.mock('vscode', () => {
+  class Uri {
+    constructor(readonly path: string) {}
+    toString() {
+      return `file://${this.path}`;
+    }
+    static joinPath(base: Uri, ...parts: string[]) {
+      return new Uri([base.path, ...parts].join('/'));
+    }
+  }
+  class ThemeIcon {
+    static Folder = 'folder';
+    static File = 'file';
+    constructor(readonly id: string) {}
+  }
+  return {
+    Uri,
+    ThemeIcon,
+    TreeItem: class {
+      constructor(
+        public label: string,
+        public collapsibleState: number,
+      ) {}
+    },
+    TreeItemCollapsibleState: { None: 0, Collapsed: 1 },
+    FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
+    EventEmitter: class {
+      event = vi.fn();
+      fire = host.fire;
+    },
+    RelativePattern: class {},
+    commands: { registerCommand: host.registerCommand },
+    window: { showQuickPick: host.showQuickPick, createTreeView: host.createTreeView },
+    languages: { registerCodeLensProvider: vi.fn() },
+    workspace: {
+      createFileSystemWatcher: () => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} }),
+      workspaceFolders: [{ uri: new Uri('/workspace') }],
+      fs: { readFile: host.readFile, readDirectory: host.readDirectory, stat: host.stat },
+    },
+  };
+});
+
+vi.mock('../src/extension/envManager.js', () => ({
+  EnvManager: class {
+    async init() {}
+  },
+}));
+
+import { RequestsTreeProvider } from '../src/extension/requestsTree.js';
+import { activate } from '../src/extension/extension.js';
+import type { ExtensionContext } from 'vscode';
+import manifest from '../package.json';
+
+const source =
+  '### List\nGET https://example.test/items\n\n### Create\nPOST https://example.test/items\n\n{}\n';
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  host.stat.mockResolvedValue({ type: 2 });
+  host.readDirectory.mockResolvedValue([['items.http', 1]]);
+  host.readFile.mockResolvedValue(new TextEncoder().encode(source));
+});
+
+describe('request explorer method filter', () => {
+  it('All methods restores request order and removes the filter indicator; Escape keeps it', async () => {
+    const view = { description: undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.filterRequests',
+    )![1];
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const original = (await provider.getChildren(file)).map((node) => node.toTreeItem().command);
+    host.showQuickPick.mockImplementationOnce(async (items: { label: string }[]) =>
+      items.find((item) => item.label === 'POST'),
+    );
+    await run();
+    host.fire.mockClear();
+    host.showQuickPick.mockResolvedValueOnce(undefined);
+    await run();
+    expect(host.fire).not.toHaveBeenCalled();
+    expect(view.description).toBe('Method: POST');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Create']);
+    host.showQuickPick.mockImplementationOnce(async (items: { label: string }[]) => items[0]);
+    await run();
+    expect(view.description).toBeUndefined();
+    expect((await provider.getChildren(file)).map((node) => node.toTreeItem().command)).toEqual(
+      original,
+    );
+    expect(
+      host.showQuickPick.mock.calls[0][0].map((item: { label: string }) => item.label),
+    ).toEqual([
+      'All methods',
+      'GET',
+      'POST',
+      'PUT',
+      'DELETE',
+      'PATCH',
+      'HEAD',
+      'OPTIONS',
+      'TRACE',
+      'GRPC',
+    ]);
+  });
+
+  it('keeps folders and files visible without eagerly reading any file', async () => {
+    host.readDirectory.mockResolvedValue([
+      ['nested', 2],
+      ['items.http', 1],
+      ['echo.grpc', 1],
+    ]);
+    const provider = new RequestsTreeProvider();
+    const original = await provider.getChildren();
+    provider.setMethodFilter('POST');
+    const filtered = await provider.getChildren();
+    expect(filtered.map((node) => node.label)).toEqual(original.map((node) => node.label));
+    const nested = await provider.getChildren(filtered[0]);
+    expect(nested.map((node) => node.label)).toEqual(['nested', 'echo.grpc', 'items.http']);
+    expect(host.readFile).not.toHaveBeenCalled();
+  });
+
+  it('preserves GRPC send targets when selected and excludes them for HTTP filters', async () => {
+    host.readDirectory.mockResolvedValue([['echo.grpc', 1]]);
+    host.readFile.mockResolvedValue(
+      new TextEncoder().encode('GRPC localhost:50051/echo.v1.Echo/Say\n\n{}'),
+    );
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const original = await provider.getChildren(file);
+    provider.setMethodFilter('GET');
+    expect((await provider.getChildren(file))[0].kind).toBe('message');
+    provider.setMethodFilter('GRPC');
+    const filtered = await provider.getChildren(file);
+    expect(filtered.map((node) => node.toTreeItem().command)).toEqual(
+      original.map((node) => node.toTreeItem().command),
+    );
+    expect(filtered[0].toTreeItem().command).toMatchObject({ command: 'reqit.sendGrpcRequest' });
+  });
+
+  it('does not display HTTP requests when GRPC is selected', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setMethodFilter('GRPC');
+    expect((await provider.getChildren(file))[0].kind).toBe('message');
+  });
+
+  it('uses the latest method selection when a file read finishes late', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    let finish!: (bytes: Uint8Array) => void;
+    host.readFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    provider.setMethodFilter('GET');
+    const reading = provider.getChildren(file);
+    provider.setMethodFilter('POST');
+    finish(new TextEncoder().encode(source));
+    expect((await reading).map((node) => node.label)).toEqual(['Create']);
+  });
+
+  it('refresh retains the filter and reparses changed source without caching bodies', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setMethodFilter('POST');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Create']);
+    host.readFile.mockResolvedValue(
+      new TextEncoder().encode('### Replacement\nPOST https://example.test/new'),
+    );
+    provider.refresh();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Replacement']);
+  });
+
+  it('does not misreport failed or empty file reads as a filter mismatch', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setMethodFilter('GET');
+    host.readFile.mockRejectedValueOnce(new Error('private path must not be reflected'));
+    expect(await provider.getChildren(file)).toEqual([]);
+    host.readFile.mockResolvedValueOnce(new Uint8Array());
+    expect(await provider.getChildren(file)).toEqual([]);
+  });
+
+  it('does not let an older picker completion overwrite a newer selection', async () => {
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.filterRequests',
+    )![1];
+    let finishOld!: () => void;
+    host.showQuickPick.mockImplementationOnce(
+      (items: { label: string }[]) =>
+        new Promise((resolve) => {
+          finishOld = () => resolve(items.find((item) => item.label === 'POST'));
+        }),
+    );
+    const oldRun = run();
+    host.showQuickPick.mockImplementationOnce(async (items: { label: string }[]) =>
+      items.find((item) => item.label === 'GET'),
+    );
+    await run();
+    finishOld();
+    await oldRun;
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List']);
+    expect(host.createTreeView.mock.results[0].value.description).toBe('Method: GET');
+  });
+
+  it('explains when a parsed file contains no matching requests', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setMethodFilter('DELETE');
+    const nodes = await provider.getChildren(file);
+    expect(nodes.map((node) => node.label)).toEqual(['No requests match the method filter']);
+    expect(nodes[0].kind).toBe('message');
+    expect(nodes[0].toTreeItem().command).toBeUndefined();
+  });
+
+  it('exposes the filter in both the command palette and request-view toolbar', () => {
+    expect(manifest.contributes.commands).toContainEqual({
+      command: 'reqit.filterRequests',
+      title: 'Reqit: Filter Requests by Method',
+      category: 'Reqit',
+      icon: '$(filter)',
+    });
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'reqit.filterRequests',
+      when: 'view == reqit.requests',
+      group: 'navigation',
+    });
+  });
+
+  it('activation registers a picker that filters the live explorer provider', async () => {
+    const view = { description: undefined };
+    host.createTreeView.mockReturnValue(view);
+    host.showQuickPick.mockImplementation(async (items) =>
+      items.find((item: { label: string }) => item.label === 'POST'),
+    );
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.filterRequests',
+    );
+    expect(command).toBeDefined();
+    await command![1]();
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Create']);
+    expect(view.description).toBe('Method: POST');
+    expect(host.showQuickPick.mock.calls[0][1]).toMatchObject({
+      title: 'Filter requests by method',
+      canPickMany: false,
+    });
+  });
+
+  it('ignores invalid boundary values rather than hiding every request', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setMethodFilter('GET');
+    host.fire.mockClear();
+    for (const input of ['get', 'ALL', 'secret-value', '', null, {}, ['POST'], 1]) {
+      provider.setMethodFilter(input);
+      expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List']);
+    }
+    expect(host.fire).not.toHaveBeenCalled();
+  });
+
+  it('filters parsed children without changing the surviving send target', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const all = await provider.getChildren(file);
+    const original = all[1].toTreeItem().command;
+
+    provider.setMethodFilter('POST');
+    const filtered = await provider.getChildren(file);
+
+    expect(filtered.map((node) => node.label)).toEqual(['Create']);
+    expect(filtered[0].toTreeItem().command).toEqual(original);
+    expect(original).toMatchObject({
+      command: 'reqit.sendRequest',
+      arguments: [{ documentUri: 'file:///workspace/.requests/items.http', requestLineIndex: 4 }],
+    });
+    expect(host.fire).toHaveBeenCalledWith(undefined);
+  });
+});
