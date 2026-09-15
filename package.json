@@ -143,6 +143,12 @@
         "icon": "$(filter)"
       },
       {
+        "command": "reqit.searchRequestsByName",
+        "title": "Reqit: Search Requests by Name",
+        "category": "Reqit",
+        "icon": "$(search)"
+      },
+      {
         "command": "reqit.selectEnv",
         "title": "Reqit: Select Environment",
         "category": "Reqit"
@@ -191,6 +197,11 @@
       "view/title": [
         {
           "command": "reqit.filterRequests",
+          "when": "view == reqit.requests",
+          "group": "navigation"
+        },
+        {
+          "command": "reqit.searchRequestsByName",
           "when": "view == reqit.requests",
           "group": "navigation"
         },

@@ -9,21 +9,46 @@ import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js'
  * Grouping: subfolders are folder nodes, `.http` files are file nodes, each
  * file expands into its parsed requests (using `### name` when present).
  */
+export const REQUEST_NAME_SEARCH_MAX_LENGTH = 128;
+
 export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNode> {
   private readonly _onDidChange = new vscode.EventEmitter<RequestsNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
-  // A presentation-only filter: never persisted, and never resolves secrets.
+  // Presentation-only filters: never persisted, and never resolve secrets.
   private methodFilter: string | undefined;
+  private nameSearchFilter: string | undefined;
 
-  setMethodFilter(method: unknown): void {
+  setMethodFilter(method: unknown): boolean {
     if (
       method !== undefined &&
       (typeof method !== 'string' ||
         !(method === 'GRPC' || HTTP_METHODS.some((allowed) => allowed === method)))
-    ) return;
+    ) return false;
+    if (this.methodFilter === method) return false;
     this.methodFilter = method;
     this.refresh();
+    return true;
+  }
+
+  getMethodFilter(): string | undefined {
+    return this.methodFilter;
+  }
+
+  hasNameSearchFilter(): boolean {
+    return this.nameSearchFilter !== undefined;
+  }
+
+  setNameFilter(query: unknown): boolean {
+    if (query !== undefined && typeof query !== 'string') return false;
+    if (typeof query === 'string' && query.length > REQUEST_NAME_SEARCH_MAX_LENGTH) return false;
+
+    const normalized =
+      query === undefined || query.length === 0 ? undefined : query.toLocaleLowerCase();
+    if (this.nameSearchFilter === normalized) return false;
+    this.nameSearchFilter = normalized;
+    this.refresh();
+    return true;
   }
 
   refresh(): void {
@@ -50,20 +75,52 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
     }
     if (node.kind === 'file') {
       const requests = await parseFileRequests(node.uri);
-      // Read the current filter AFTER I/O so a late read cannot restore an
-      // obsolete selection. Do not renumber nodes: their send anchors survive.
+      // Read current filters AFTER I/O so a late read cannot restore obsolete
+      // selections. Do not renumber nodes: their send anchors survive.
+      const methodFilter = this.methodFilter;
+      const nameSearchFilter = this.nameSearchFilter;
       const filtered = requests.filter(
         (request) =>
-          this.methodFilter === undefined ||
-          (request.kind === 'request' && request.request.method === this.methodFilter) ||
-          (request.kind === 'grpc-request' && this.methodFilter === 'GRPC'),
+          matchesMethodFilter(request, methodFilter) && matchesNameFilter(request, nameSearchFilter),
       );
       return requests.length > 0 && filtered.length === 0
-        ? [new MessageNode('No requests match the method filter')]
+        ? [new MessageNode(noMatchMessage(methodFilter, nameSearchFilter))]
         : filtered;
     }
     return [];
   }
+}
+
+function matchesMethodFilter(request: RequestsNode, methodFilter: string | undefined): boolean {
+  return (
+    methodFilter === undefined ||
+    (request.kind === 'request' && request.request.method === methodFilter) ||
+    (request.kind === 'grpc-request' && methodFilter === 'GRPC')
+  );
+}
+
+function matchesNameFilter(request: RequestsNode, nameSearchFilter: string | undefined): boolean {
+  if (nameSearchFilter === undefined) return true;
+  if (request.kind === 'request') {
+    return request.request.name?.toLocaleLowerCase().includes(nameSearchFilter) ?? false;
+  }
+  if (request.kind === 'grpc-request') {
+    return request.request.name?.toLocaleLowerCase().includes(nameSearchFilter) ?? false;
+  }
+  return false;
+}
+
+function noMatchMessage(
+  methodFilter: string | undefined,
+  nameSearchFilter: string | undefined,
+): string {
+  if (methodFilter !== undefined && nameSearchFilter !== undefined) {
+    return 'No requests match current filters';
+  }
+  if (nameSearchFilter !== undefined) {
+    return 'No requests match the active name search';
+  }
+  return 'No requests match the method filter';
 }
 
 async function dirExists(uri: vscode.Uri): Promise<boolean> {
