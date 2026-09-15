@@ -66,13 +66,15 @@ Then press `F5` in VS Code to launch an Extension Development Host with Reqit lo
 2. Open the sample file. Click **Send Request** above any request.
 3. Pick an environment from the status-bar item.
 
-### Filter the request explorer
+### Filter and search the request explorer
 
-In **Reqit Requests**, use the filter icon or run **Reqit: Filter Requests by Method** from the command palette. Choose an HTTP method or **GRPC**; **All methods** clears the filter, and Escape leaves it unchanged. The view title shows the active method.
+In **Reqit Requests**, use the filter icon or run **Reqit: Filter Requests by Method** from the command palette. Choose an HTTP method or **GRPC**; **All methods** clears the filter, and Escape leaves it unchanged.
 
-Filtering affects request children inside expanded `.http`/`.grpc` files in the first workspace's `.requests/` tree. Folders and files stay visible (this is not a recursive search); a parsed file with no matching requests shows a non-actionable message. Selecting a matching request keeps its original source location and existing send/preview action. Refresh keeps the filter, while reloading the extension resets it.
+Use the search icon or **Reqit: Search Requests by Name** to apply a case-insensitive literal substring match over explicit `### name` labels in parsed `.http`/`.grpc` requests. Empty input clears the search; Escape preserves the current search. Input is bounded to 128 characters. The view title shows only generic active-filter indicators (`Method: ...` and/or `Name search active`), never the search text.
 
-Only the chosen method is held in memory: this command does not resolve variables/secrets, write workspace files, or send requests. It reuses existing lazy file reads and parsers, without building a new body/response index. Name/URL/text search, CRUD, path-confinement hardening, and 1,000-request performance validation remain tracked in [#56](https://github.com/rwrife/reqit/issues/56); no measured indexing/search-speed claim is made here.
+Filtering/search affects request children inside expanded `.http`/`.grpc` files in the first workspace's `.requests/` tree. Folders and files stay visible (no recursive index); unnamed fallback labels (`METHOD URL` / target-derived gRPC labels) are excluded from name search. A parsed file with no matching requests shows a non-actionable message. Selecting a matching request keeps its original source location and existing send/preview action. Refresh keeps active filters, while reloading the extension resets them.
+
+Method + name filters are composed in-memory (AND). This feature does not resolve variables/secrets, write workspace files, or send requests. It reuses existing lazy file reads and parsers without building a new body/response index. URL/body/header search, CRUD, path-confinement hardening, and 1,000-request performance validation remain tracked in [#56](https://github.com/rwrife/reqit/issues/56); no measured indexing/search-speed claim is made here.
 
 ## Auth examples
 

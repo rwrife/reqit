@@ -27,7 +27,10 @@ import { initWorkspace } from './initWorkspace.js';
 import { importFromCurlCommand } from './importCurl.js';
 import { importFromPostmanCommand } from './importPostman.js';
 import { importFromOpenApiCommand } from './importOpenapi.js';
-import { RequestsTreeProvider } from './requestsTree.js';
+import {
+  REQUEST_NAME_SEARCH_MAX_LENGTH,
+  RequestsTreeProvider,
+} from './requestsTree.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
@@ -59,6 +62,15 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(treeView);
   let filterPickerGeneration = 0;
+  let nameSearchPromptGeneration = 0;
+
+  const updateRequestsTreeDescription = (): void => {
+    const parts: string[] = [];
+    const methodFilter = treeProvider.getMethodFilter();
+    if (methodFilter) parts.push(`Method: ${methodFilter}`);
+    if (treeProvider.hasNameSearchFilter()) parts.push('Name search active');
+    treeView.description = parts.length > 0 ? parts.join(' • ') : undefined;
+  };
 
   const envManager = new EnvManager(context);
   context.subscriptions.push(envManager);
@@ -107,7 +119,21 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (generation !== filterPickerGeneration || !picked || !choices.includes(picked)) return;
       treeProvider.setMethodFilter(picked.method);
-      treeView.description = picked.method ? `Method: ${picked.method}` : undefined;
+      updateRequestsTreeDescription();
+    }),
+    vscode.commands.registerCommand('reqit.searchRequestsByName', async () => {
+      const generation = ++nameSearchPromptGeneration;
+      const input = await vscode.window.showInputBox({
+        title: 'Search requests by name',
+        placeHolder: 'Case-insensitive literal match on ### request names (empty clears)',
+        validateInput: (value: string) =>
+          value.length > REQUEST_NAME_SEARCH_MAX_LENGTH
+            ? `Name search must be ${REQUEST_NAME_SEARCH_MAX_LENGTH} characters or fewer.`
+            : undefined,
+      });
+      if (generation !== nameSearchPromptGeneration || input === undefined) return;
+      treeProvider.setNameFilter(input);
+      updateRequestsTreeDescription();
     }),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),

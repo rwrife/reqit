@@ -8,6 +8,7 @@ const host = vi.hoisted(() => ({
   stat: vi.fn(),
   fire: vi.fn(),
   showQuickPick: vi.fn(),
+  showInputBox: vi.fn(),
   registerCommand: vi.fn(),
   createTreeView: vi.fn(),
 }));
@@ -43,7 +44,11 @@ vi.mock('vscode', () => {
     },
     RelativePattern: class {},
     commands: { registerCommand: host.registerCommand },
-    window: { showQuickPick: host.showQuickPick, createTreeView: host.createTreeView },
+    window: {
+      showQuickPick: host.showQuickPick,
+      showInputBox: host.showInputBox,
+      createTreeView: host.createTreeView,
+    },
     languages: { registerCodeLensProvider: vi.fn() },
     workspace: {
       createFileSystemWatcher: () => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} }),
@@ -59,7 +64,10 @@ vi.mock('../src/extension/envManager.js', () => ({
   },
 }));
 
-import { RequestsTreeProvider } from '../src/extension/requestsTree.js';
+import {
+  REQUEST_NAME_SEARCH_MAX_LENGTH,
+  RequestsTreeProvider,
+} from '../src/extension/requestsTree.js';
 import { activate } from '../src/extension/extension.js';
 import type { ExtensionContext } from 'vscode';
 import manifest from '../package.json';
@@ -297,5 +305,244 @@ describe('request explorer method filter', () => {
       arguments: [{ documentUri: 'file:///workspace/.requests/items.http', requestLineIndex: 4 }],
     });
     expect(host.fire).toHaveBeenCalledWith(undefined);
+  });
+
+  it('searches literal case-insensitive substrings over explicit names only', async () => {
+    host.readFile.mockResolvedValue(
+      new TextEncoder().encode(
+        'GET https://example.test/list\n\n### [Prod].*? Ping+\nPOST https://example.test/items\n\n{}\n',
+      ),
+    );
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setNameFilter('.*? ping+');
+    const nodes = await provider.getChildren(file);
+    expect(nodes.map((node) => node.label)).toEqual(['[Prod].*? Ping+']);
+  });
+
+  it('does not match URL/body/header sentinels on explicitly named HTTP/GRPC requests', async () => {
+    const sentinel = 'nameonlysentinel';
+    const httpSource = [
+      '### Named Alpha',
+      `POST https://example.test/items/${sentinel}`,
+      `x-sentinel: ${sentinel}`,
+      '',
+      `{"token":"${sentinel}"}`,
+      '',
+    ].join('\n');
+    const grpcSource = [
+      '### Named Beta',
+      `GRPC localhost:50051/echo.v1.Echo/Method${sentinel}`,
+      `x-sentinel: ${sentinel}`,
+      '',
+      `{"token":"${sentinel}"}`,
+      '',
+    ].join('\n');
+    expect(httpSource).toContain(sentinel);
+    expect(grpcSource).toContain(sentinel);
+
+    host.readDirectory.mockResolvedValue([
+      ['named.http', 1],
+      ['named.grpc', 1],
+    ]);
+    host.readFile.mockImplementation(async (uri: { path: string }) => {
+      if (uri.path.endsWith('/named.http')) {
+        return new TextEncoder().encode(httpSource);
+      }
+      return new TextEncoder().encode(grpcSource);
+    });
+
+    const provider = new RequestsTreeProvider();
+    const [grpcFile, httpFile] = await provider.getChildren();
+    provider.setNameFilter(sentinel);
+    const grpcNodes = await provider.getChildren(grpcFile);
+    const httpNodes = await provider.getChildren(httpFile);
+    expect(grpcNodes.map((node) => node.label)).toEqual(['No requests match the active name search']);
+    expect(grpcNodes[0].kind).toBe('message');
+    expect(httpNodes.map((node) => node.label)).toEqual(['No requests match the active name search']);
+    expect(httpNodes[0].kind).toBe('message');
+  });
+
+  it('excludes unnamed HTTP/GRPC fallback labels from name search results', async () => {
+    host.readDirectory.mockResolvedValue([
+      ['named.http', 1],
+      ['named.grpc', 1],
+    ]);
+    host.readFile.mockImplementation(async (uri: { path: string }) => {
+      if (uri.path.endsWith('/named.http')) {
+        return new TextEncoder().encode(
+          'GET https://example.test/echo\n\n### Named Create\nPOST https://example.test/items\n\n{}\n',
+        );
+      }
+      return new TextEncoder().encode(
+        'GRPC localhost:50051/echo.v1.Echo/Say\n\n{}\n\n### Echo Named\nGRPC localhost:50051/echo.v1.Echo/Ping\n\n{}\n',
+      );
+    });
+    const provider = new RequestsTreeProvider();
+    const [grpcFile, httpFile] = await provider.getChildren();
+    provider.setNameFilter('echo');
+    const grpcNodes = await provider.getChildren(grpcFile);
+    const httpNodes = await provider.getChildren(httpFile);
+    expect(grpcNodes.map((node) => node.label)).toEqual(['Echo Named']);
+    expect(httpNodes[0].kind).toBe('message');
+  });
+
+  it('applies name and method filters together and keeps send anchors stable', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const original = (await provider.getChildren(file))[1].toTreeItem().command;
+
+    provider.setNameFilter('cre');
+    provider.setMethodFilter('POST');
+    const intersecting = await provider.getChildren(file);
+    expect(intersecting.map((node) => node.label)).toEqual(['Create']);
+    expect(intersecting[0].toTreeItem().command).toEqual(original);
+
+    provider.setMethodFilter('GET');
+    const disjoint = await provider.getChildren(file);
+    expect(disjoint.map((node) => node.label)).toEqual(['No requests match current filters']);
+    expect(disjoint[0].kind).toBe('message');
+    expect(disjoint[0].toTreeItem().command).toBeUndefined();
+  });
+
+  it('uses the latest name filter when a file read finishes late', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    let finish!: (bytes: Uint8Array) => void;
+    host.readFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    provider.setNameFilter('list');
+    const reading = provider.getChildren(file);
+    provider.setNameFilter('create');
+    finish(new TextEncoder().encode(source));
+    expect((await reading).map((node) => node.label)).toEqual(['Create']);
+  });
+
+  it('ignores invalid name-filter boundary values before preprocessing', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setNameFilter('list');
+    host.fire.mockClear();
+    for (const input of [null, {}, ['list'], 1, true, 'x'.repeat(REQUEST_NAME_SEARCH_MAX_LENGTH + 1)]) {
+      provider.setNameFilter(input);
+      expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List']);
+    }
+    expect(host.fire).not.toHaveBeenCalled();
+  });
+
+  it('exposes the name search command in both command palette and request-view toolbar', () => {
+    expect(manifest.contributes.commands).toContainEqual({
+      command: 'reqit.searchRequestsByName',
+      title: 'Reqit: Search Requests by Name',
+      category: 'Reqit',
+      icon: '$(search)',
+    });
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'reqit.searchRequestsByName',
+      when: 'view == reqit.requests',
+      group: 'navigation',
+    });
+  });
+
+  it('activation wires native input -> parser-backed name search with bounded validation', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    host.showInputBox.mockImplementationOnce(async (options: { validateInput?: (value: string) => string | undefined }) => {
+      expect(options.title).toBe('Search requests by name');
+      expect(options.placeHolder).toBe('Case-insensitive literal match on ### request names (empty clears)');
+      expect(await options.validateInput?.('ok')).toBeUndefined();
+      expect(await options.validateInput?.('x'.repeat(REQUEST_NAME_SEARCH_MAX_LENGTH + 1))).toBe(
+        `Name search must be ${REQUEST_NAME_SEARCH_MAX_LENGTH} characters or fewer.`,
+      );
+      return 'cre';
+    });
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.searchRequestsByName',
+    )![1];
+    await run();
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Create']);
+    expect(view.description).toBe('Name search active');
+    expect(view.description).not.toContain('cre');
+  });
+
+  it('empty search clears while Escape preserves the existing name filter', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.searchRequestsByName',
+    )![1];
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    host.showInputBox.mockResolvedValueOnce('list');
+    await run();
+    host.fire.mockClear();
+    host.showInputBox.mockResolvedValueOnce(undefined);
+    await run();
+    expect(host.fire).not.toHaveBeenCalled();
+    expect(view.description).toBe('Name search active');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List']);
+    host.showInputBox.mockResolvedValueOnce('');
+    await run();
+    expect(view.description).toBeUndefined();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List', 'Create']);
+  });
+
+  it('does not let an older search prompt completion overwrite a newer one', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.searchRequestsByName',
+    )![1];
+    let finishOld!: () => void;
+    host.showInputBox.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishOld = () => resolve('list');
+        }),
+    );
+    const oldRun = run();
+    host.showInputBox.mockResolvedValueOnce('cre');
+    await run();
+    finishOld();
+    await oldRun;
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Create']);
+    expect(view.description).toBe('Name search active');
+  });
+
+  it('keeps method and name-search indicators accurate as each filter changes', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const runMethod: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.filterRequests',
+    )![1];
+    const runSearch: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.searchRequestsByName',
+    )![1];
+    host.showQuickPick.mockImplementationOnce(async (items: { label: string }[]) =>
+      items.find((item) => item.label === 'POST'),
+    );
+    await runMethod();
+    expect(view.description).toBe('Method: POST');
+    host.showInputBox.mockResolvedValueOnce('cre');
+    await runSearch();
+    expect(view.description).toBe('Method: POST • Name search active');
+    host.showInputBox.mockResolvedValueOnce('');
+    await runSearch();
+    expect(view.description).toBe('Method: POST');
+    host.showQuickPick.mockImplementationOnce(async (items: { label: string }[]) => items[0]);
+    await runMethod();
+    expect(view.description).toBeUndefined();
   });
 });
