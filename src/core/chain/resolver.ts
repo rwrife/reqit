@@ -23,6 +23,11 @@ import { parseJsonPath, queryJsonPath } from './jsonpath.js';
 /** Identifier grammar for `# @name` and capture names (issue #47). */
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/** True when `value` is a valid `# @name` / capture identifier. */
+export function isValidChainName(value: string): boolean {
+  return NAME_RE.test(value);
+}
+
 /** A recorded chain reference parsed out of `{{ ... }}` text. */
 export type ChainReference =
   | { kind: 'response'; part: 'status'; requestName: string }
@@ -142,8 +147,34 @@ export interface CaptureApplyError {
 }
 
 /**
+ * Single-parse cache for capture evaluation (issue #47 review B5): a
+ * request may declare many `# @capture` directives against the SAME
+ * response record; parsing a (potentially large, hostile) body once per
+ * directive would multiply work per send. The WeakMap is keyed by the
+ * response-record object identity, so it caches per exchange without ever
+ * outliving it — and never parses the same `body` string twice.
+ */
+const captureBodyDocs = new WeakMap<
+  ChainResponseRecord,
+  { ok: true; doc: unknown } | { ok: false }
+>();
+
+function parseCaptureBody(response: ChainResponseRecord): { ok: true; doc: unknown } | { ok: false } {
+  const cached = captureBodyDocs.get(response);
+  if (cached) return cached;
+  let result: { ok: true; doc: unknown } | { ok: false };
+  try {
+    result = { ok: true, doc: JSON.parse(response.body) };
+  } catch {
+    result = { ok: false };
+  }
+  captureBodyDocs.set(response, result);
+  return result;
+}
+
+/**
  * Evaluate a capture directive against a recorded response, validating the
- * captured value against the declared type when one was given.
+ * declared type when one was given.
  */
 export function applyCapture(
   directiveSource: string,
@@ -152,13 +183,11 @@ export function applyCapture(
   const parsed = parseCaptureDirective(directiveSource);
   if ('error' in parsed) return parsed;
 
-  let doc: unknown;
-  try {
-    doc = JSON.parse(response.body);
-  } catch {
+  const doc = parseCaptureBody(response);
+  if (!doc.ok) {
     return { error: `Response body is not valid JSON; cannot capture ${parsed.path}` };
   }
-  const q = queryJsonPath(doc, parsed.path);
+  const q = queryJsonPath(doc.doc, parsed.path);
   if (!q.found) return { error: `Capture ${parsed.name}: ${q.error}` };
 
   if (parsed.declaredType !== null) {
@@ -194,6 +223,44 @@ export interface CaptureRecord {
   secret: boolean;
 }
 
+interface StoredCapture extends CaptureRecord {
+  /**
+   * The `# @name` whose exchange originally recorded this capture, or
+   * `undefined` for captures recorded by an unnamed exchange. Dedup is
+   * owner-scoped: re-running the same named exchange with `replaceOwner`
+   * REPLACES the capture set it owns — in the same atomic step as its
+   * response overwrite — so a capture and `{{name.response…}}` always come
+   * from the SAME last run (issue #47 review B4/F2). A DIFFERENT exchange
+   * recording a name it does not own is a duplicate error.
+   */
+  owner: string | undefined;
+}
+
+export interface CaptureRecordResult {
+  /** Index into the input array this result refers to. */
+  index: number;
+  name: string;
+  /** True when this entry's value is what the store now holds for `name`. */
+  stored: boolean;
+  /** Rejection diagnostic when `stored` is false. */
+  diagnostic?: string;
+}
+
+/** Options for `recordCaptures`; defaults keep the pure-append + reject shape. */
+export interface RecordCapturesOptions {
+  /** The `# @name` that owns this recording (undefined = unnamed). */
+  owner?: string;
+  /**
+   * When true (named exchange re-record): the owner's previously stored
+   * captures are REMOVED first, then this call's valid entries are stored
+   * (first-wins within the call). A capture whose directive failed this
+   * run therefore disappears instead of serving stale data (F2).
+   * When false: owner-refresh only replaces a capture this owner already
+   * owns; anything else collides.
+   */
+  replaceOwner?: boolean;
+}
+
 export interface ChainStore {
   recordRequest(name: string, record: ChainRequestRecord): void;
   recordResponse(name: string, record: ChainResponseRecord): void;
@@ -201,12 +268,17 @@ export interface ChainStore {
   getResponse(name: string): ChainResponseRecord | undefined;
   recordedNames(): string[];
   /**
-   * Store capture results for the run. Returns human-readable diagnostics
-   * (invalid or duplicate names); valid entries are stored even when some
-   * entries in the same call are rejected (per-entry error collection).
-   * Existing captures are never overwritten — duplicates are errors.
+   * Store capture results for the run with per-entry outcomes
+   * (`CaptureRecordResult[]`): every input index gets a result, `stored:
+   * true` means the store now holds THIS entry's value for that name
+   * (first-wins within the call; later duplicates are rejected). Invalid
+   * names are rejected. Dedup/refresh is owner-scoped per
+   * `RecordCapturesOptions` (see `StoredCapture` / `replaceOwner`).
    */
-  recordCaptures(captures: readonly AppliedCapture[]): string[];
+  recordCaptures(
+    captures: readonly AppliedCapture[],
+    options?: RecordCapturesOptions,
+  ): CaptureRecordResult[];
   getCapture(name: string): CaptureRecord | undefined;
   captureNames(): string[];
   clear(): void;
@@ -229,6 +301,25 @@ function cloneCaptureValue(value: unknown): unknown {
 }
 
 /**
+ * The store's duplicate-capture diagnostic, in one shared place so the
+ * recording stage can reliably identify which captures were rejected.
+ * Capture names match `NAME_RE` (no apostrophes), so `duplicateCaptureNameOf`
+ * round-trips exactly.
+ */
+const DUPLICATE_CAPTURE_PREFIX = "duplicate capture name '";
+
+export function duplicateCaptureDiagnostic(name: string): string {
+  return `${DUPLICATE_CAPTURE_PREFIX}${name}' (captures must be unique per run)`;
+}
+
+/** The capture name a duplicate diagnostic refers to, or `undefined`. */
+export function duplicateCaptureNameOf(diagnostic: string): string | undefined {
+  if (!diagnostic.startsWith(DUPLICATE_CAPTURE_PREFIX)) return undefined;
+  const end = diagnostic.indexOf("'", DUPLICATE_CAPTURE_PREFIX.length);
+  return end === -1 ? undefined : diagnostic.slice(DUPLICATE_CAPTURE_PREFIX.length, end);
+}
+
+/**
  * Create an empty per-run chain store. Names are matched case-sensitively
  * (they are identifiers); response headers are matched case-insensitively.
  * Nothing here persists to disk and no values are treated as secrets by the
@@ -240,7 +331,7 @@ function cloneCaptureValue(value: unknown): unknown {
 export function createChainStore(): ChainStore {
   const requests = new Map<string, ChainRequestRecord>();
   const responses = new Map<string, ChainResponseRecord>();
-  const captures = new Map<string, CaptureRecord>();
+  const captures = new Map<string, StoredCapture>();
   return {
     recordRequest(name, record) {
       requests.set(name, { body: record.body });
@@ -264,24 +355,59 @@ export function createChainStore(): ChainStore {
     recordedNames() {
       return [...responses.keys()];
     },
-    recordCaptures(capturesToStore) {
-      const diagnostics: string[] = [];
-      const batchSeen = new Set<string>();
-      for (const cap of capturesToStore) {
-        if (!NAME_RE.test(cap.name)) {
-          diagnostics.push(
-            `Invalid capture name '${cap.name}' (must start with a letter or underscore; letters, digits, underscore only)`,
-          );
-          continue;
+    recordCaptures(capturesToStore, options) {
+      const results: CaptureRecordResult[] = [];
+      const owner = options?.owner;
+      const replace = options?.replaceOwner === true && owner !== undefined;
+      // Replace-first: a named re-record removes EVERY capture this owner
+      // held before storing anything, so a directive that failed (or was
+      // removed) this run cannot leave a stale value disagreeing with the
+      // fresh response (issue #47 review F2). Unnamed recordings never
+      // replace anything.
+      if (replace) {
+        for (const [name, rec] of captures) {
+          if (rec.owner === owner) captures.delete(name);
         }
-        if (captures.has(cap.name) || batchSeen.has(cap.name)) {
-          diagnostics.push(`duplicate capture name '${cap.name}' (captures must be unique per run)`);
-          continue;
+      }
+      const batchSeen = new Set<string>();
+      capturesToStore.forEach((cap, index) => {
+        if (!NAME_RE.test(cap.name)) {
+          results.push({
+            index,
+            name: cap.name,
+            stored: false,
+            diagnostic: `Invalid capture name '${cap.name}' (must start with a letter or underscore; letters, digits, underscore only)`,
+          });
+          return;
+        }
+        const existing = captures.get(cap.name);
+        // Owner-scoped refresh: only a NAMED exchange may refresh captures
+        // it originally recorded (never undefined === undefined — unnamed
+        // exchanges can never co-opt or refresh, they only collide). Within
+        // one call, a repeated name is still a duplicate regardless of owner.
+        const refreshesOwn =
+          owner !== undefined &&
+          !batchSeen.has(cap.name) &&
+          existing !== undefined &&
+          existing.owner === owner;
+        if (!refreshesOwn && (existing !== undefined || batchSeen.has(cap.name))) {
+          results.push({
+            index,
+            name: cap.name,
+            stored: false,
+            diagnostic: duplicateCaptureDiagnostic(cap.name),
+          });
+          return;
         }
         batchSeen.add(cap.name);
-        captures.set(cap.name, { value: cloneCaptureValue(cap.value), secret: cap.secret });
-      }
-      return diagnostics;
+        captures.set(cap.name, {
+          value: cloneCaptureValue(cap.value),
+          secret: cap.secret,
+          owner,
+        });
+        results.push({ index, name: cap.name, stored: true });
+      });
+      return results;
     },
     getCapture(name) {
       const rec = captures.get(name);
@@ -310,9 +436,24 @@ export interface ChainDiagnostic {
   message: string;
 }
 
+export interface ResolvedCapture {
+  /** Capture name that was substituted. */
+  name: string;
+  /** The exact text substituted into the request. */
+  value: string;
+  /** Whether the capture was declared `secret` (redaction boundary input). */
+  secret: boolean;
+}
+
 export interface ChainSubstituteResult {
   text: string;
   diagnostics: ChainDiagnostic[];
+  /**
+   * Capture-name references (`{{captureName}}`) that were substituted in
+   * this pass, with provenance. Adapters use `secret` entries to keep
+   * secret capture values out of derived/rendered surfaces.
+   */
+  resolvedCaptures: ResolvedCapture[];
 }
 
 /**
@@ -322,7 +463,7 @@ export interface ChainSubstituteResult {
  */
 export const MAX_CHAIN_REFS_PER_PASS = 100;
 
-function serializeValue(value: unknown): string {
+export function serializeValue(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -346,10 +487,17 @@ interface ResolutionContext {
   jsonCache: Map<string, { ok: true; doc: unknown } | { ok: false }>;
   chainRefs: number;
   boundDiagPosted: boolean;
+  resolvedCaptures: ResolvedCapture[];
 }
 
 function createResolutionContext(store: ChainStore): ResolutionContext {
-  return { store, jsonCache: new Map(), chainRefs: 0, boundDiagPosted: false };
+  return {
+    store,
+    jsonCache: new Map(),
+    chainRefs: 0,
+    boundDiagPosted: false,
+    resolvedCaptures: [],
+  };
 }
 
 function parsedBody(
@@ -598,8 +746,10 @@ export function resolveChainText(source: string, store: ChainStore): ChainSubsti
 
 function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubstituteResult {
   const diagnostics: ChainDiagnostic[] = [];
+  const captureStart = ctx.resolvedCaptures.length;
   const placeholders = findPlaceholders(source);
-  if (placeholders.length === 0) return { text: source, diagnostics };
+  if (placeholders.length === 0)
+    return { text: source, diagnostics, resolvedCaptures: ctx.resolvedCaptures.slice(captureStart) };
 
   let out = '';
   let cursor = 0;
@@ -609,6 +759,37 @@ function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubs
 
     const classified = classifyChainReference(ph.inner, ctx.store);
     if (classified === null) {
+      // Capture-name reference: `{{token}}` where `token` was captured this
+      // run. Resolution is single-pass, so this only ever sees captures
+      // recorded BEFORE this send (never captures from the response being
+      // prepared). A bound capture shadows a same-named env variable —
+      // documented precedence; unresolved names stay silent (env stage owns
+      // them).
+      const capture = NAME_RE.test(ph.inner) ? ctx.store.getCapture(ph.inner) : undefined;
+      if (capture !== undefined) {
+        if (ctx.chainRefs >= MAX_CHAIN_REFS_PER_PASS) {
+          if (!ctx.boundDiagPosted) {
+            ctx.boundDiagPosted = true;
+            diagnostics.push({
+              reference: ph.full,
+              variable: ph.inner,
+              message: `Too many chain references in one pass (limit ${MAX_CHAIN_REFS_PER_PASS}); remaining chain references left literal`,
+            });
+          }
+          out += ph.full;
+          continue;
+        }
+        ctx.chainRefs += 1;
+        const value = serializeValue(capture.value);
+        const resolved: ResolvedCapture = {
+          name: ph.inner,
+          value,
+          secret: capture.secret,
+        };
+        ctx.resolvedCaptures.push(resolved);
+        out += value;
+        continue;
+      }
       out += ph.full; // ordinary env/built-in reference
       continue;
     }
@@ -640,7 +821,11 @@ function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubs
     out += resolved.value;
   }
   out += source.slice(cursor);
-  return { text: out, diagnostics };
+  return {
+    text: out,
+    diagnostics,
+    resolvedCaptures: ctx.resolvedCaptures.slice(captureStart),
+  };
 }
 
 export interface ChainRequestInput {
@@ -654,6 +839,8 @@ export interface ChainRequestResult {
   headers: Array<{ name: string; value: string }>;
   body: string;
   diagnostics: ChainDiagnostic[];
+  /** Capture substitutions made across url, headers, and body. */
+  resolvedCaptures: ResolvedCapture[];
 }
 
 /** Resolve chain references across a request's url, header values, and body. */
@@ -671,7 +858,7 @@ export function resolveChainRequest(
   const url = run(req.url);
   const headers = req.headers.map((h) => ({ name: h.name, value: run(h.value) }));
   const body = run(req.body);
-  return { url, headers, body, diagnostics };
+  return { url, headers, body, diagnostics, resolvedCaptures: ctx.resolvedCaptures };
 }
 
 // ---------------------------------------------------------------------------

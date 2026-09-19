@@ -328,8 +328,8 @@ describe('resolveChainText / resolveChainRequest', () => {
   it('deep-copies object capture values on record and retrieval', () => {
     const s = store();
     const obj = { nested: { tok: 'original' } };
-    const errs = s.recordCaptures([{ name: 'objcap', value: obj, secret: false }]);
-    expect(errs).toEqual([]);
+    const diags = s.recordCaptures([{ name: 'objcap', value: obj, secret: false }]);
+    expect(diags.filter((r) => !r.stored)).toEqual([]);
     obj.nested.tok = 'tampered-source';
     const got = s.getCapture('objcap')!;
     expect((got.value as typeof obj).nested.tok).toBe('original');
@@ -400,11 +400,11 @@ describe('resolveChainText / resolveChainRequest', () => {
 
   it('stores captures per run with duplicate detection and secret flags', () => {
     const s = store();
-    const errs = s.recordCaptures([
+    const results = s.recordCaptures([
       { name: 'token', value: 'tok', secret: true },
       { name: 'count', value: 7, secret: false },
     ]);
-    expect(errs).toEqual([]);
+    expect(results.every((r) => r.stored)).toBe(true);
     expect(s.getCapture('token')).toEqual({ value: 'tok', secret: true });
     expect(s.getCapture('count')).toEqual({ value: 7, secret: false });
     expect(s.getCapture('absent')).toBeUndefined();
@@ -413,12 +413,13 @@ describe('resolveChainText / resolveChainRequest', () => {
     // duplicate names are rejected per-run (must be caught before wiring)
     const dup = s.recordCaptures([{ name: 'token', value: 'tok2', secret: true }]);
     expect(dup).toHaveLength(1);
-    expect(dup[0]).toContain('duplicate capture');
+    expect(dup[0]!.stored).toBe(false);
+    expect(dup[0]!.diagnostic).toContain('duplicate capture');
     expect(s.getCapture('token')).toEqual({ value: 'tok', secret: true }); // first wins
 
     // invalid names rejected
     const bad = s.recordCaptures([{ name: '1bad', value: 'x', secret: false }]);
-    expect(bad.some((d) => d.includes('1bad'))).toBe(true);
+    expect(bad.some((r) => !r.stored && r.diagnostic!.includes('1bad'))).toBe(true);
 
     // clear() wipes captures too
     s.clear();

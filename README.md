@@ -43,6 +43,7 @@ Reqit fixes that.
   - `clientCert` (mTLS) — PEM (`cert` + `key` + optional `ca`) or PFX with passphrase
   - `oauth2` — `clientCredentials` and `authorizationCode` w/ PKCE; tokens cached in `SecretStorage`
 - **Send Request codelens** — one-click execution backed by [`undici`](https://github.com/nodejs/undici); response opens in a side panel.
+- **Request chaining** — name a request with `# @name`, pull values out of its response with `# @capture name[: type [secret]] = $.path`, and reference them from later requests (`{{login.response.body.$.token}}`, `{{login.response.status}}`, `{{tok}}`). Chain references resolve before sending; unresolved ones block the send with an actionable error. Captures and recorded exchanges live in memory for the window session only — never persisted — and `secret` captures never appear in the rendered request echo. See [`docs/chain-grammar.md`](./docs/chain-grammar.md) and the scaffolded `.requests/chain.http` sample.
 - **Copy as curl** — POSIX-safe, secrets redacted by default. Opt in to `revealSecrets: true` when you really need it.
 - **Inline assertions** — `# @test status === 200`, `# @test json.id != null`, etc. (M6, runner UI shipping in follow-up).
 - **GraphQL** — mark a request with `# @graphql` or `X-Request-Kind: graphql` and write the query naturally; Reqit serializes `{ query, variables, operationName }` and pretty-prints `data` / `errors` separately. See `### GraphQL` below.

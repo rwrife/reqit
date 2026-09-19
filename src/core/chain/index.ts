@@ -23,6 +23,7 @@ export {
   resolveChainText,
   resolveChainRequest,
   validateRequestNames,
+  isValidChainName,
   MAX_CHAIN_REFS_PER_PASS,
   type ChainReference,
   type CaptureType,
@@ -38,4 +39,12 @@ export {
   type ChainSubstituteResult,
   type ChainRequestInput,
   type ChainRequestResult,
+  type ResolvedCapture,
 } from './resolver.js';
+export {
+  prepareChainSend,
+  recordChainExchange,
+  type ChainSendResult,
+  type ChainRecordResult,
+  type SendExchange,
+} from './send.js';

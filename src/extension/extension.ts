@@ -3,6 +3,13 @@ import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.
 import { toUndiciRequest } from '../core/request.js';
 import { substituteRequest } from '../core/substitute.js';
 import {
+  createChainStore,
+  isValidChainName,
+  prepareChainSend,
+  recordChainExchange,
+  validateRequestNames,
+} from '../core/chain/index.js';
+import {
   renderResponse,
   renderGrpcInfo,
   renderSseResponse,
@@ -48,6 +55,61 @@ let lastSseTranscript: LastSseTranscript | undefined;
  * its driver finishes naturally.
  */
 const sseStreams = new SseStreamRegistry();
+
+/**
+ * Per-extension-host request-chaining store (issue #47 send-path slice).
+ * Named requests, responses, and captures accumulate across sends for the
+ * life of the window session — in memory only, never persisted. Reloading
+ * the window clears it; `Run file` orchestration (a later slice) will
+ * snapshot/reset it per file run.
+ */
+const chainStore = createChainStore();
+
+/**
+ * Replace every secret capture value that was substituted into a rendered
+ * surface with a fixed marker. Redaction boundary for `secret` captures:
+ * the value goes out on the wire, but derived/rendered copies must not
+ * echo it (issue #47 acceptance: redaction in hover/history/exports; the
+ * response-view request echo is the first such surface this slice covers).
+ */
+export function redactSecretText(text: string, secrets: readonly string[]): string {
+  // Longest-first (issue #47 review F1): if one secret is a prefix of
+  // another, masking the shorter first exposes the longer one's tail as a
+  // remnant (`ovlap-longerval` -> `[REDACTED]-longerval`).
+  const ordered = [...new Set(secrets.filter((s) => s.length > 0))].sort(
+    (a, b) => b.length - a.length,
+  );
+  let out = text;
+  for (const secret of ordered) {
+    out = out.split(secret).join('[REDACTED]');
+    // JSON-escaped form (issue #47 review F1): `# @graphql` bodies are
+    // re-serialized as JSON, so a secret containing `"`/newlines crosses
+    // the wire escaped (`sec\"ret`) and a raw-string split misses it.
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    if (escaped !== secret) out = out.split(escaped).join('[REDACTED]');
+  }
+  return out;
+}
+
+/**
+ * Surface capture recording diagnostics (invalid directives, failed type
+ * validation, duplicate names) as a warning. Capture problems never block
+ * the response render — the exchange itself succeeded.
+ *
+ * Bounded output (issue #47 review B5): hostile files can declare many
+ * capture directives, each yielding a diagnostic. Only the first few are
+ * shown verbatim; the remainder collapses into an "and N more" summary so
+ * the toast never grows with input size.
+ */
+const CAPTURE_WARNING_SHOWN = 3;
+
+function reportCaptureDiagnostics(diagnostics: readonly string[]): void {
+  if (diagnostics.length === 0) return;
+  const shown = diagnostics.slice(0, CAPTURE_WARNING_SHOWN).join('; ');
+  const rest = diagnostics.length - CAPTURE_WARNING_SHOWN;
+  const summary = rest > 0 ? `${shown}; and ${rest} more (see capture directives)` : shown;
+  void vscode.window.showWarningMessage(`Reqit: capture issues — ${summary}`);
+}
 
 /** Stop all live SSE streams. Returns how many streams were stopped. */
 function stopSseStreams(): number {
@@ -354,9 +416,34 @@ async function runRequest(
   req: ParsedRequest,
   envManager: EnvManager,
 ): Promise<void> {
-  const { resolve } = await envManager.buildResolver();
-  const substituted = substituteRequest(
+  // Chain stage FIRST: resolve `{{name.response…}}` / capture references
+  // against the run store before environment substitution. Unresolved
+  // chain references block the send — a raw `{{login.…}}` on the wire is
+  // never what the user meant (issue #47).
+  const chainName = req.directives['name'];
+  const chained = prepareChainSend(
     { url: req.url, headers: req.headers, body: req.body },
+    chainStore,
+  );
+  if (chained.diagnostics.length > 0) {
+    const refs = [...new Set(chained.diagnostics.map((d) => d.variable))].join(', ');
+    const details = chained.diagnostics.map((d) => `${d.variable}: ${d.message}`).join('; ');
+    vscode.window.showErrorMessage(
+      `Reqit: unresolved chain references (${envManager.active}): ${refs} — ${details}`,
+    );
+    return;
+  }
+  // A declared-but-invalid `@name` can never be referenced; surface it now
+  // rather than recording an unusable entry (recording skips it too).
+  if (chainName !== undefined && !isValidChainName(chainName)) {
+    vscode.window.showWarningMessage(
+      `Reqit: ${validateRequestNames([chainName])[0]} — this response will not be referenceable.`,
+    );
+  }
+
+  const { resolve, secretValues } = await envManager.buildResolver();
+  const substituted = substituteRequest(
+    { url: chained.url, headers: chained.headers, body: chained.body },
     { resolve },
   );
   if (substituted.diagnostics.length > 0) {
@@ -379,6 +466,33 @@ async function runRequest(
     vscode.window.showErrorMessage(`Reqit: invalid request — ${(err as Error).message}`);
     return;
   }
+  // Rendered echo of the request with secret capture values redacted: the
+  // wire request carries them, derived surfaces must not (see
+  // `redactSecretText`). EVERY string field in the render copy is scrubbed
+  // — url, header values, AND body — because the rendered request object
+  // crosses into the webview (issue #47 review B2: url+headers-only redaction
+  // leaked secret-substituted bodies).
+  //
+  // Redaction sources (issue #47 review F1): (a) chain-resolved secret
+  // captures, (b) the active environment's SecretStorage values — a capture
+  // may hold a template like `{{inner}}` that the env stage later expands
+  // into the real secret, so the capture value alone never appears in the
+  // final wire string. Both lists are scrubbed, longest-first with the
+  // JSON-escaped form, inside `redactSecretText`.
+  const renderSecrets = [...chained.resolvedSecrets, ...secretValues];
+  const renderRequest = {
+    ...opts,
+    url: redactSecretText(opts.url, renderSecrets),
+    headers: Object.fromEntries(
+      Object.entries(opts.headers).map(([k, v]) => [
+        k,
+        redactSecretText(String(v), renderSecrets),
+      ]),
+    ),
+    ...(opts.body !== undefined
+      ? { body: redactSecretText(opts.body, renderSecrets) }
+      : {}),
+  };
 
   // Dynamic import — keeps activation cheap and avoids bundling undici into the activation path.
   const { request } = await import('undici');
@@ -398,13 +512,36 @@ async function runRequest(
       Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
     );
     if (isSseResponse(res.headers)) {
-      await streamSseResponse(context, req, opts, res, responseHeaders, started, stream);
+      // SSE streams have no single response body to capture from; record
+      // the exchange with an empty body so at least `{{name.response.status}}`
+      // and header references resolve downstream. Event-level capture is
+      // outside this slice.
+      const sseRecord = recordChainExchange(
+        chainStore,
+        chainName,
+        req.captures,
+        opts.body ?? '',
+        { received: true, status: res.statusCode, headers: responseHeaders, body: '' },
+      );
+      reportCaptureDiagnostics(sseRecord.diagnostics);
+      // The TRANSPORT keeps the real wire `opts` (reconnects replay it —
+      // secrets must survive there); only the VIEW copy is redacted
+      // (issue #47 review B1).
+      await streamSseResponse(context, req, opts, renderRequest, res, responseHeaders, started, stream);
       return;
     }
     const bodyText = await res.body.text();
     const elapsedMs = Date.now() - started;
+    const exchangeRecord = recordChainExchange(
+      chainStore,
+      chainName,
+      req.captures,
+      opts.body ?? '',
+      { received: true, status: res.statusCode, headers: responseHeaders, body: bodyText },
+    );
+    reportCaptureDiagnostics(exchangeRecord.diagnostics);
     renderResponse(context, {
-      request: opts,
+      request: renderRequest,
       status: res.statusCode,
       headers: responseHeaders,
       body: bodyText,
@@ -412,6 +549,9 @@ async function runRequest(
     });
   } catch (err) {
     const elapsedMs = Date.now() - started;
+    // Transport failure / user cancellation: record NOTHING. Downstream
+    // chain references keep failing loudly against the last genuinely
+    // received state (issue #47 error semantics).
     if (stream.signal.aborted) {
       // The user stopped this request while it was waiting for response
       // headers: `Stop stream` already reported it; don't double-report
@@ -421,7 +561,7 @@ async function runRequest(
     const message = sanitizeSseErrorText((err as Error).message ?? String(err));
     vscode.window.showErrorMessage(`Reqit: request failed — ${message}`);
     renderResponse(context, {
-      request: opts,
+      request: renderRequest,
       status: 0,
       headers: {},
       body: `// Error after ${elapsedMs}ms\n${sanitizeSseErrorText((err as Error).stack ?? (err as Error).message, 4000)}`,
@@ -455,12 +595,16 @@ async function streamSseResponse(
   context: vscode.ExtensionContext,
   req: ParsedRequest,
   opts: import('../core/request.js').UndiciRequestOptions,
+  viewOpts: import('../core/request.js').UndiciRequestOptions,
   res: { statusCode: number; body: AsyncIterable<unknown> },
   responseHeaders: Record<string, string>,
   _started: number,
   stream: SseStreamHandle,
 ): Promise<void> {
-  const requestForView = opts;
+  // `opts` is the REAL wire request and stays exclusive to the transport
+  // (reconnects replay it verbatim); `viewOpts` is the redacted copy that
+  // may cross into the rendered panel (issue #47 review B1).
+  const requestForView = viewOpts;
   const directives = sseOptionsFromDirectives(req.directives);
   const events: SseRenderEvent[] = [];
   const transcriptRecords: SseTranscriptRecord[] = [];
