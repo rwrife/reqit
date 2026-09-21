@@ -33,6 +33,16 @@ export interface SubstituteOptions {
 export interface SubstituteResult {
   text: string;
   diagnostics: SubstituteDiagnostic[];
+  /**
+   * Every successful substitution this call made: the literal reference
+   * text (e.g. `{{inner}}` or `{{$guid}}`) and the value injected in its
+   * place. Adapters use this for taint tracking (issue #47 review F1-R3):
+   * if a SECRET value contains one of these reference texts, the injected
+   * value (env or builtin — including random ones that cannot be
+   * recomputed) is what actually reached the wire and must join the
+   * redaction set. Deduplicated by reference text.
+   */
+  injected: Array<{ reference: string; value: string }>;
 }
 
 const REF_RE = /\{\{\s*([^}]+?)\s*\}\}/g;
@@ -119,6 +129,7 @@ function evalBuiltin(
 /** Substitute `{{...}}` references inside `source` using `opts.resolve`. */
 export function substitute(source: string, opts: SubstituteOptions): SubstituteResult {
   const diagnostics: SubstituteDiagnostic[] = [];
+  const injected: Array<{ reference: string; value: string }> = [];
   const rand = opts.random ?? defaultRandom;
   const now = opts.now ?? defaultNow;
 
@@ -126,7 +137,10 @@ export function substitute(source: string, opts: SubstituteOptions): SubstituteR
     const expr = raw.trim();
     if (expr.startsWith('$')) {
       const result = evalBuiltin(expr.slice(1), rand, now);
-      if ('value' in result) return result.value;
+      if ('value' in result) {
+        injected.push({ reference: match, value: result.value });
+        return result.value;
+      }
       diagnostics.push({ reference: match, variable: expr, message: result.error });
       return match;
     }
@@ -139,10 +153,11 @@ export function substitute(source: string, opts: SubstituteOptions): SubstituteR
       });
       return match;
     }
+    injected.push({ reference: match, value: resolved });
     return resolved;
   });
 
-  return { text, diagnostics };
+  return { text, diagnostics, injected };
 }
 
 /** Convenience: substitute over a request's URL, header values, and body in one pass. */
@@ -157,6 +172,8 @@ export interface RequestSubstitutionResult {
   headers: Array<{ name: string; value: string }>;
   body: string;
   diagnostics: SubstituteDiagnostic[];
+  /** Union of every successful substitution across url/headers/body. */
+  injected: Array<{ reference: string; value: string }>;
 }
 
 export function substituteRequest(
@@ -164,19 +181,23 @@ export function substituteRequest(
   opts: SubstituteOptions,
 ): RequestSubstitutionResult {
   const diagnostics: SubstituteDiagnostic[] = [];
+  const injected: Array<{ reference: string; value: string }> = [];
   const push = (d: SubstituteDiagnostic[]): void => {
     for (const x of d) diagnostics.push(x);
   };
 
   const url = substitute(req.url, opts);
   push(url.diagnostics);
+  injected.push(...url.injected);
   const headers = req.headers.map((h) => {
     const v = substitute(h.value, opts);
     push(v.diagnostics);
+    injected.push(...v.injected);
     return { name: h.name, value: v.text };
   });
   const body = substitute(req.body, opts);
   push(body.diagnostics);
+  injected.push(...body.injected);
 
-  return { url: url.text, headers, body: body.text, diagnostics };
+  return { url: url.text, headers, body: body.text, diagnostics, injected };
 }

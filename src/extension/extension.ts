@@ -66,30 +66,16 @@ const sseStreams = new SseStreamRegistry();
 const chainStore = createChainStore();
 
 /**
- * Replace every secret capture value that was substituted into a rendered
- * surface with a fixed marker. Redaction boundary for `secret` captures:
- * the value goes out on the wire, but derived/rendered copies must not
- * echo it (issue #47 acceptance: redaction in hover/history/exports; the
- * response-view request echo is the first such surface this slice covers).
+ * Shared redaction boundary (pure core, issue #47): every derived surface —
+ * rendered echoes, recorded store bodies, clipboard/cURL exports, error
+ * toasts — scrubs secret values with this ONE implementation so adapters
+ * cannot fork the behavior. The CLI adapter reuses it directly.
  */
-export function redactSecretText(text: string, secrets: readonly string[]): string {
-  // Longest-first (issue #47 review F1): if one secret is a prefix of
-  // another, masking the shorter first exposes the longer one's tail as a
-  // remnant (`ovlap-longerval` -> `[REDACTED]-longerval`).
-  const ordered = [...new Set(secrets.filter((s) => s.length > 0))].sort(
-    (a, b) => b.length - a.length,
-  );
-  let out = text;
-  for (const secret of ordered) {
-    out = out.split(secret).join('[REDACTED]');
-    // JSON-escaped form (issue #47 review F1): `# @graphql` bodies are
-    // re-serialized as JSON, so a secret containing `"`/newlines crosses
-    // the wire escaped (`sec\"ret`) and a raw-string split misses it.
-    const escaped = JSON.stringify(secret).slice(1, -1);
-    if (escaped !== secret) out = out.split(escaped).join('[REDACTED]');
-  }
-  return out;
-}
+import { redactSecretText } from '../core/chain/redact.js';
+
+// Re-export for the (test-visible) adapter surface; the implementation lives
+// in the pure core so the CLI adapter shares identical behavior.
+export { redactSecretText };
 
 /**
  * Surface capture recording diagnostics (invalid directives, failed type
@@ -105,7 +91,13 @@ const CAPTURE_WARNING_SHOWN = 3;
 
 function reportCaptureDiagnostics(diagnostics: readonly string[]): void {
   if (diagnostics.length === 0) return;
-  const shown = diagnostics.slice(0, CAPTURE_WARNING_SHOWN).join('; ');
+  // Per-diagnostic length bound (issue #47 review G): a hostile directive
+  // text can be embedded verbatim in an error string, so the count bound
+  // alone is not a size bound. Each shown diagnostic is truncated hard.
+  const CAPTURE_DIAG_MAX = 200;
+  const clip = (d: string): string =>
+    d.length <= CAPTURE_DIAG_MAX ? d : `${d.slice(0, CAPTURE_DIAG_MAX - 1)}…`;
+  const shown = diagnostics.slice(0, CAPTURE_WARNING_SHOWN).map(clip).join('; ');
   const rest = diagnostics.length - CAPTURE_WARNING_SHOWN;
   const summary = rest > 0 ? `${shown}; and ${rest} more (see capture directives)` : shown;
   void vscode.window.showWarningMessage(`Reqit: capture issues — ${summary}`);
@@ -223,9 +215,24 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.window.showErrorMessage('Reqit: request not found at codelens position.');
           return;
         }
+        // Chain stage FIRST, mirroring runRequest (issue #47 review D):
+        // the clipboard must reproduce the request Send Request WOULD
+        // issue — chain refs included — and consume the same secret
+        // provenance so the export path cannot bypass redaction.
+        const chained = prepareChainSend(
+          { url: req.url, headers: req.headers, body: req.body },
+          chainStore,
+        );
+        if (chained.diagnostics.length > 0) {
+          const refs = [...new Set(chained.diagnostics.map((d) => d.variable))].join(', ');
+          vscode.window.showErrorMessage(
+            `Reqit: unresolved chain references: ${refs} — run the source request first.`,
+          );
+          return;
+        }
         const { resolve, secretValues } = await envManager.buildResolver();
         const substituted = substituteRequest(
-          { url: req.url, headers: req.headers, body: req.body },
+          { url: chained.url, headers: chained.headers, body: chained.body },
           { resolve },
         );
         if (substituted.diagnostics.length > 0) {
@@ -234,6 +241,23 @@ export function activate(context: vscode.ExtensionContext): void {
             `Reqit: unresolved variables (${envManager.active}): ${names}`,
           );
           return;
+        }
+        // Same taint closure as runRequest: env-injected expansions of
+        // secret text join the clipboard redaction set.
+        const copySecrets = [...chained.resolvedSecrets, ...secretValues];
+        for (let pass = 0; pass < 4; pass++) {
+          let grew = false;
+          for (const inj of substituted.injected) {
+            if (
+              inj.value !== '' &&
+              !copySecrets.includes(inj.value) &&
+              copySecrets.some((sec) => sec.includes(inj.reference))
+            ) {
+              copySecrets.push(inj.value);
+              grew = true;
+            }
+          }
+          if (!grew) break;
         }
         let opts;
         try {
@@ -244,11 +268,18 @@ export function activate(context: vscode.ExtensionContext): void {
             body: substituted.body,
           });
         } catch (err) {
-          vscode.window.showErrorMessage(`Reqit: invalid request — ${(err as Error).message}`);
+          vscode.window.showErrorMessage(
+            `Reqit: invalid request — ${redactSecretText(
+              sanitizeSseErrorText((err as Error).message ?? String(err)),
+              copySecrets,
+            )}`,
+          );
           return;
         }
         const cmd = requestToCurl(opts, {
-          redact: arg.revealSecrets ? [] : secretValues,
+          // Chain secret captures AND env secrets (with taint closure) are
+          // redaction inputs on reveal=false copies (issue #47 review D).
+          redact: arg.revealSecrets ? [] : copySecrets,
         });
         await vscode.env.clipboard.writeText(cmd);
         vscode.window.showInformationMessage(
@@ -286,6 +317,32 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!req) {
           vscode.window.showErrorMessage('Reqit: request not found at codelens position.');
           return;
+        }
+        // Enforce the documented per-file name uniqueness BEFORE recording
+        // can let two source requests fight over one store name (issue #47
+        // review E): duplicates block the send with an actionable error.
+        // Only VALID names can collide in the store (invalid ones are
+        // never recorded and already warn per-send), so the duplicate scan
+        // excludes them and keeps the invalid-name warning behavior.
+        const allNames = parsed.requests
+          .map((r) => r.directives['name'])
+          .filter((n): n is string => n !== undefined && isValidChainName(n));
+        const dupDiags = validateRequestNames(allNames);
+        if (dupDiags.length > 0) {
+          vscode.window.showErrorMessage(
+            `Reqit: cannot run chained file — ${dupDiags.slice(0, 3).join('; ')}${dupDiags.length > 3 ? `; and ${dupDiags.length - 3} more` : ''}`,
+          );
+          return;
+        }
+        // Surface parser-level bounds (capture-limit truncation) for THIS
+        // request instead of silently dropping directives (issue #47 F).
+        const parseDiags = parsed.diagnostics.filter(
+          (d) => d.line === arg.requestLineIndex && d.message.includes('capture limit'),
+        );
+        if (parseDiags.length > 0) {
+          vscode.window.showWarningMessage(
+            `Reqit: ${parseDiags.map((d) => d.message).join('; ')}`,
+          );
         }
         await runRequest(context, req, envManager);
       },
@@ -459,11 +516,48 @@ async function runRequest(
     headers: substituted.headers,
     body: substituted.body,
   };
+  // Compute the redaction set BEFORE the first fallible step whose error
+  // text can echo substituted request data (issue #47 review C). Sources:
+  // (a) chain-resolved secret captures, (b) the active environment's
+  // SecretStorage values — a capture may hold a template like `{{inner}}`
+  // that the env stage later expands into the real secret, so the capture
+  // value alone never appears in the final wire string. Scrubbing is
+  // longest-first with the JSON-escaped form inside `redactSecretText`.
+  //
+  // Taint closure (issue #47 review F1-R3): the expansion is not limited to
+  // SecretStorage — if a secret's text contains ANY reference the env stage
+  // injected (ordinary env var or builtin like `$guid`, which cannot be
+  // recomputed), the injected value is what reached the wire for that
+  // secret and must join the redaction set. Bounded passes; the source list
+  // only ever grows by values derived from values already known secret.
+  const renderSecrets = [...chained.resolvedSecrets, ...secretValues];
+  for (let pass = 0; pass < 4; pass++) {
+    let grew = false;
+    for (const inj of substituted.injected) {
+      if (
+        inj.value !== '' &&
+        !renderSecrets.includes(inj.value) &&
+        renderSecrets.some((sec) => sec.includes(inj.reference))
+      ) {
+        renderSecrets.push(inj.value);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+  // One helper for every user-facing text derived from this request's
+  // substitution stage: transport/validator error messages and stacks all
+  // route through here (issue #47 review C — a raw exception can embed the
+  // secret-bearing URL or bare secret text).
+  const redactUserText = (text: string): string =>
+    redactSecretText(sanitizeSseErrorText(text, 4000), renderSecrets);
   let opts;
   try {
     opts = toUndiciRequest(requestForUndici);
   } catch (err) {
-    vscode.window.showErrorMessage(`Reqit: invalid request — ${(err as Error).message}`);
+    vscode.window.showErrorMessage(
+      `Reqit: invalid request — ${redactUserText((err as Error).message ?? String(err))}`,
+    );
     return;
   }
   // Rendered echo of the request with secret capture values redacted: the
@@ -472,14 +566,6 @@ async function runRequest(
   // — url, header values, AND body — because the rendered request object
   // crosses into the webview (issue #47 review B2: url+headers-only redaction
   // leaked secret-substituted bodies).
-  //
-  // Redaction sources (issue #47 review F1): (a) chain-resolved secret
-  // captures, (b) the active environment's SecretStorage values — a capture
-  // may hold a template like `{{inner}}` that the env stage later expands
-  // into the real secret, so the capture value alone never appears in the
-  // final wire string. Both lists are scrubbed, longest-first with the
-  // JSON-escaped form, inside `redactSecretText`.
-  const renderSecrets = [...chained.resolvedSecrets, ...secretValues];
   const renderRequest = {
     ...opts,
     url: redactSecretText(opts.url, renderSecrets),
@@ -511,6 +597,13 @@ async function runRequest(
     const responseHeaders: Record<string, string> = Object.fromEntries(
       Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : String(v ?? '')]),
     );
+    // Recorded request bodies are scrubbed with the SAME redaction set the
+    // render echo uses (issue #47 review F1-R3): the store outlives the
+    // current environment (rotating/switching envs drops values from the
+    // redaction list), so `{{name.request.body.$…}}` must never be able to
+    // re-surface a secret that was only current at record time. The wire
+    // request keeps the real body; only the STORE copy is scrubbed.
+    const recordedBody = redactSecretText(opts.body ?? '', renderSecrets);
     if (isSseResponse(res.headers)) {
       // SSE streams have no single response body to capture from; record
       // the exchange with an empty body so at least `{{name.response.status}}`
@@ -520,14 +613,24 @@ async function runRequest(
         chainStore,
         chainName,
         req.captures,
-        opts.body ?? '',
+        recordedBody,
         { received: true, status: res.statusCode, headers: responseHeaders, body: '' },
       );
       reportCaptureDiagnostics(sseRecord.diagnostics);
       // The TRANSPORT keeps the real wire `opts` (reconnects replay it —
       // secrets must survive there); only the VIEW copy is redacted
       // (issue #47 review B1).
-      await streamSseResponse(context, req, opts, renderRequest, res, responseHeaders, started, stream);
+      await streamSseResponse(
+        context,
+        req,
+        opts,
+        renderRequest,
+        res,
+        responseHeaders,
+        started,
+        stream,
+        renderSecrets,
+      );
       return;
     }
     const bodyText = await res.body.text();
@@ -536,7 +639,7 @@ async function runRequest(
       chainStore,
       chainName,
       req.captures,
-      opts.body ?? '',
+      recordedBody,
       { received: true, status: res.statusCode, headers: responseHeaders, body: bodyText },
     );
     reportCaptureDiagnostics(exchangeRecord.diagnostics);
@@ -558,13 +661,13 @@ async function runRequest(
       // a deliberate cancellation as a transport failure.
       return;
     }
-    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
+    const message = redactUserText((err as Error).message ?? String(err));
     vscode.window.showErrorMessage(`Reqit: request failed — ${message}`);
     renderResponse(context, {
       request: renderRequest,
       status: 0,
       headers: {},
-      body: `// Error after ${elapsedMs}ms\n${sanitizeSseErrorText((err as Error).stack ?? (err as Error).message, 4000)}`,
+      body: `// Error after ${elapsedMs}ms\n${redactUserText((err as Error).stack ?? (err as Error).message ?? String(err))}`,
       elapsedMs,
     });
   } finally {
@@ -600,6 +703,7 @@ async function streamSseResponse(
   responseHeaders: Record<string, string>,
   _started: number,
   stream: SseStreamHandle,
+  renderSecrets: readonly string[],
 ): Promise<void> {
   // `opts` is the REAL wire request and stays exclusive to the transport
   // (reconnects replay it verbatim); `viewOpts` is the redacted copy that
@@ -779,7 +883,12 @@ async function streamSseResponse(
       }
     }
   } catch (err) {
-    const message = sanitizeSseErrorText((err as Error).message ?? String(err));
+    // Same redaction discipline as the plain path (issue #47 review C): a
+    // transport error can embed the secret-bearing URL or bare secret text.
+    const message = redactSecretText(
+      sanitizeSseErrorText((err as Error).message ?? String(err)),
+      renderSecrets,
+    );
     lastSseTranscript = buildLastSseTranscript(transcriptRecords);
     handle.update({
       ...state,
