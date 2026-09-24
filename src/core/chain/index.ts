@@ -41,7 +41,7 @@ export {
   type ChainRequestResult,
   type ResolvedCapture,
 } from './resolver.js';
-export { redactSecretText } from './redact.js';
+export { redactSecretText, scrubRecordedBody, secretRedactor } from './redact.js';
 export {
   prepareChainSend,
   recordChainExchange,

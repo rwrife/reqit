@@ -35,10 +35,12 @@ environment/built-in substitution untouched:
 | `{{name.response.status}}`                  | numeric status of the recorded response (as text)  |
 | `{{name.response.headers.<Header-Name>}}`   | header value; lookup is case-insensitive           |
 | `{{name.response.body.$.path}}`             | JSONPath subset into the recorded JSON body        |
-| `{{name.request.body.$.path}}`              | JSONPath subset into the body that was actually sent |
+| `{{name.request.body.$.path}}`              | JSONPath subset into the recorded request body (secret values scrubbed at record time; see redaction below) |
 | `{{captureName}}`                           | value of a `# @capture` stored earlier in the run (see below) |
 
-Names follow the `# @name` identifier rules: `[A-Za-z_][A-Za-z0-9_]*`, unique
+Names follow the `# @name` identifier rules: `[A-Za-z_][A-Za-z0-9_]*`, at most
+`MAX_CHAIN_NAME_LENGTH` (128) characters (over-long names are rejected so
+diagnostics never echo an unbounded hostile name), unique
 per file (`validateRequestNames`). A name with no recorded entry produces an
 actionable diagnostic (`no recorded response for 'login' …`) and the literal
 `{{...}}` stays in place so the request fails loudly rather than sending a
@@ -119,7 +121,28 @@ body cannot amplify work to O(references × body size).
   based: a direct response reference (`{{login.response.body.$.token}}`)
   whose substituted text equals a secret capture's value is listed for
   redaction exactly like a bare `{{tok}}` reference — the ref style cannot
-  bypass the boundary. Codelens previews are a remaining #47 slice.
+  bypass the boundary. Boundary scope (issue #47): the raw RESPONSE view
+  shows the body the user explicitly fetched (primary data, shown
+  truthfully); everything DERIVED from the request/response — request echo,
+  notifications, error/stack text, SSE transcripts, and clipboard/cURL
+  output — passes through the one canonical redactor (raw + JSON-escaped
+  forms, longest-first, plus the complete post-substitution derived values
+  of template secrets). The recorded request body is the scrubbed copy, not
+  the raw wire body, so a `{{name.request.body.$…}}` reference can never
+  re-surface a secret after the environment rotates. The store scrub is
+  JSON-aware: for a JSON body, string leaves are masked textually while
+  non-string scalars are masked only on exact equality with a secret, so
+  the recorded copy stays parseable and references to UNRELATED fields keep
+  working (residual: an unquoted scalar secret appearing only as a
+  substring of a larger scalar survives in the store copy — prefer quoting
+  secrets in JSON bodies). Persisted SSE transcripts apply the same redactor
+  to event data at capture time; the live stream view keeps raw event data
+  (accepted display boundary). The adapter refuses to send or copy a
+  request whose substitution-provenance recording overflowed while any
+  secret candidate is in play (incomplete taint closure ⇒ fail closed), and
+  the store refuses to record a secret-capture exchange once the bounded
+  rejected-secret provenance quota (64/run) is exhausted. Codelens previews
+  are a remaining #47 slice.
 - At most `MAX_CAPTURES_PER_REQUEST` (32) capture directives are collected
   per request; beyond that the parser keeps the first 32 and emits a parse
   diagnostic instead of silently truncating (hostile-import bound).

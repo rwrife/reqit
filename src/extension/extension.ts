@@ -71,7 +71,7 @@ const chainStore = createChainStore();
  * toasts — scrubs secret values with this ONE implementation so adapters
  * cannot fork the behavior. The CLI adapter reuses it directly.
  */
-import { redactSecretText } from '../core/chain/redact.js';
+import { deriveSecretVariants, redactSecretText, scrubRecordedBody } from '../core/chain/redact.js';
 
 // Re-export for the (test-visible) adapter surface; the implementation lives
 // in the pure core so the CLI adapter shares identical behavior.
@@ -242,23 +242,22 @@ export function activate(context: vscode.ExtensionContext): void {
           );
           return;
         }
-        // Same taint closure as runRequest: env-injected expansions of
-        // secret text join the clipboard redaction set.
-        const copySecrets = [...chained.resolvedSecrets, ...secretValues];
-        for (let pass = 0; pass < 4; pass++) {
-          let grew = false;
-          for (const inj of substituted.injected) {
-            if (
-              inj.value !== '' &&
-              !copySecrets.includes(inj.value) &&
-              copySecrets.some((sec) => sec.includes(inj.reference))
-            ) {
-              copySecrets.push(inj.value);
-              grew = true;
-            }
-          }
-          if (!grew) break;
+        // Fail closed on provenance overflow with secrets in play, mirroring
+        // runRequest (issue #47 review r7 SEC1) — the clipboard must not
+        // receive an export built from an incomplete taint closure.
+        if (substituted.injectedOverflow && (chained.resolvedSecrets.length > 0 || secretValues.length > 0)) {
+          vscode.window.showErrorMessage(
+            'Reqit: too many substitutions to guarantee secret redaction — copy blocked. Reduce templated references (over 1000 recorded substitutions) and try again.',
+          );
+          return;
         }
+        // Same taint closure as runRequest (issue #47 review S5): env-injected
+        // expansions of secret text — including complete post-substitution
+        // derived variants — join the clipboard redaction set.
+        const copySecrets = deriveSecretVariants(
+          [...chained.resolvedSecrets, ...secretValues],
+          substituted.injected,
+        );
         let opts;
         try {
           opts = toUndiciRequest({
@@ -510,6 +509,19 @@ async function runRequest(
     );
     return;
   }
+  // Fail closed on provenance overflow while ANY secret is in play (issue #47
+  // review r7 SEC1): once recording stopped at MAX_INJECTED_RECORDS, a later
+  // — unrecorded — substitution could be the expansion of a secret template,
+  // so the taint closure would be incomplete and derived surfaces could ship
+  // the secret unredacted. Block instead of sending an unreconcilable
+  // request. With zero secret candidates the closure provably contributes
+  // nothing and legitimate huge templated bodies keep working.
+  if (substituted.injectedOverflow && (chained.resolvedSecrets.length > 0 || secretValues.length > 0)) {
+    vscode.window.showErrorMessage(
+      'Reqit: too many substitutions to guarantee secret redaction — request blocked. Reduce templated references (over 1000 recorded substitutions) and try again.',
+    );
+    return;
+  }
   const requestForUndici: ParsedRequest = {
     ...req,
     url: substituted.url,
@@ -524,27 +536,20 @@ async function runRequest(
   // value alone never appears in the final wire string. Scrubbing is
   // longest-first with the JSON-escaped form inside `redactSecretText`.
   //
-  // Taint closure (issue #47 review F1-R3): the expansion is not limited to
-  // SecretStorage — if a secret's text contains ANY reference the env stage
-  // injected (ordinary env var or builtin like `$guid`, which cannot be
-  // recomputed), the injected value is what reached the wire for that
-  // secret and must join the redaction set. Bounded passes; the source list
-  // only ever grows by values derived from values already known secret.
-  const renderSecrets = [...chained.resolvedSecrets, ...secretValues];
-  for (let pass = 0; pass < 4; pass++) {
-    let grew = false;
-    for (const inj of substituted.injected) {
-      if (
-        inj.value !== '' &&
-        !renderSecrets.includes(inj.value) &&
-        renderSecrets.some((sec) => sec.includes(inj.reference))
-      ) {
-        renderSecrets.push(inj.value);
-        grew = true;
-      }
-    }
-    if (!grew) break;
-  }
+  // Taint closure (issue #47 review F1-R3 + S5): the expansion is not limited
+  // to SecretStorage — if a secret's text contains ANY reference the env
+  // stage injected (ordinary env var or builtin like `$guid`, which cannot
+  // be recomputed), the injected value is what reached the wire for that
+  // secret and must join the redaction set. `deriveSecretVariants` closes
+  // the set completely: besides each injected component it adds the FULL
+  // post-substitution secret (`prefix{{inner}}suffix` → `prefixINsuffix`,
+  // including the collapse case where an empty expansion leaves neither the
+  // template nor the component as a substring) and chained expansions, with
+  // bounded growth for hostile self-referencing templates.
+  const renderSecrets = deriveSecretVariants(
+    [...chained.resolvedSecrets, ...secretValues],
+    substituted.injected,
+  );
   // One helper for every user-facing text derived from this request's
   // substitution stage: transport/validator error messages and stacks all
   // route through here (issue #47 review C — a raw exception can embed the
@@ -599,11 +604,13 @@ async function runRequest(
     );
     // Recorded request bodies are scrubbed with the SAME redaction set the
     // render echo uses (issue #47 review F1-R3): the store outlives the
-    // current environment (rotating/switching envs drops values from the
-    // redaction list), so `{{name.request.body.$…}}` must never be able to
-    // re-surface a secret that was only current at record time. The wire
-    // request keeps the real body; only the STORE copy is scrubbed.
-    const recordedBody = redactSecretText(opts.body ?? '', renderSecrets);
+    // current environment, so `{{name.request.body.$…}}` must never be able
+    // to re-surface a secret that was only current at record time. The wire
+    // request keeps the real body; only the STORE copy is scrubbed — via
+    // the JSON-aware scrubber so a numeric/boolean secret cannot break
+    // `{{name.request.body.$…}}` references to UNRELATED fields for the
+    // rest of the run (issue #47 review r7 LOGIC3).
+    const recordedBody = scrubRecordedBody(opts.body ?? '', renderSecrets);
     if (isSseResponse(res.headers)) {
       // SSE streams have no single response body to capture from; record
       // the exchange with an empty body so at least `{{name.response.status}}`
@@ -818,8 +825,17 @@ async function streamSseResponse(
       // Capture through the production allowlist boundary: even though
       // `opts` (auth headers included) is in scope here, only the three
       // record fields can enter the transcript.
+      // The transcript is a PERSISTED derived surface (saved .jsonl outlives
+      // the session), so it gets the canonical redaction pass the documented
+      // boundary requires (issue #47 review r7 SEC3). The LIVE view above
+      // keeps the raw event data — the explicitly accepted display boundary.
       transcriptRecords.push(
-        pickSseTranscriptRecord({ event, index: meta.index, timestampMs: eventTimestampMs, sentRequest: opts }),
+        pickSseTranscriptRecord({
+          event: { ...event, data: redactSecretText(event.data, renderSecrets) },
+          index: meta.index,
+          timestampMs: eventTimestampMs,
+          sentRequest: opts,
+        }),
       );
       state.elapsedMs = meta.elapsedMs;
       handle.update({ ...state, events: [...events] });

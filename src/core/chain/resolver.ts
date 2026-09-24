@@ -23,9 +23,29 @@ import { parseJsonPath, queryJsonPath } from './jsonpath.js';
 /** Identifier grammar for `# @name` and capture names (issue #47). */
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+/**
+ * Hard length cap on identifiers (issue #47 review S6): valid identifiers
+ * beyond this are REJECTED, because diagnostics echo the offending name and
+ * an unbounded name is an unbounded toast/echo vector.
+ */
+export const MAX_CHAIN_NAME_LENGTH = 128;
+
+/** Per-item bound on every diagnostic message this module emits (review S6). */
+const DIAGNOSTIC_MAX = 300;
+
+/** Clip hostile-length text for safe embedding in a diagnostic. */
+function bounded(text: string, max = DIAGNOSTIC_MAX): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** Clip a name for diagnostic echo (review S6). */
+function clipName(name: string): string {
+  return bounded(name, 140);
+}
+
 /** True when `value` is a valid `# @name` / capture identifier. */
 export function isValidChainName(value: string): boolean {
-  return NAME_RE.test(value);
+  return value.length <= MAX_CHAIN_NAME_LENGTH && NAME_RE.test(value);
 }
 
 /** A recorded chain reference parsed out of `{{ ... }}` text. */
@@ -50,6 +70,10 @@ export function parseChainReference(ref: string): ChainReference | null {
   const m = CHAIN_REF_RE.exec(ref);
   if (!m) return null;
   const [, requestName, kindRaw, partRaw, restRaw] = m;
+  // Length bound (issue #47 review r7 S6): an over-long valid-shaped name
+  // can never be a recorded chain name; reject it as a chain ref here so
+  // classifyChainReference can never echo it inside a malformed diagnostic.
+  if (requestName.length > MAX_CHAIN_NAME_LENGTH) return null;
   const kind = kindRaw as 'response' | 'request';
   const part = partRaw as 'status' | 'headers' | 'body';
   const rest = restRaw === undefined ? undefined : restRaw.trim();
@@ -105,14 +129,23 @@ export function parseCaptureDirective(
   const m = CAPTURE_RE.exec(source.trim());
   if (!m) {
     return {
-      error: `Invalid capture directive: "${source}" (expected name[: type [secret]] = $.path)`,
+      error: bounded(
+        `Invalid capture directive: "${source}" (expected name[: type [secret]] = $.path)`,
+      ),
     };
   }
   const [, name, typeRaw, secretRaw, pathRaw] = m;
+  // Identifier length bound (issue #47 review S6): an over-long valid-shaped
+  // name is rejected here so no downstream diagnostic ever echoes it whole.
+  if (name.length > MAX_CHAIN_NAME_LENGTH) {
+    return {
+      error: `Capture name too long (${name.length} chars; max ${MAX_CHAIN_NAME_LENGTH}): "${clipName(name)}"`,
+    };
+  }
   let declaredType: CaptureType | null = null;
   if (typeRaw !== undefined) {
     if (!CAPTURE_TYPES.includes(typeRaw as CaptureType)) {
-      return { error: `Unknown capture type "${typeRaw}" (expected string | number | boolean)` };
+      return { error: bounded(`Unknown capture type "${typeRaw}" (expected string | number | boolean)`) };
     }
     declaredType = typeRaw as CaptureType;
   }
@@ -122,10 +155,10 @@ export function parseCaptureDirective(
   }
   const path = pathRaw.trim();
   if (!path.startsWith('$')) {
-    return { error: `Capture path must be a JSONPath starting with '$': "${pathRaw.trim()}"` };
+    return { error: bounded(`Capture path must be a JSONPath starting with '$': "${pathRaw}"`) };
   }
   if ('error' in parseJsonPath(path)) {
-    return { error: `Unsupported capture path "${path}" (subset: $, .key, ['key'], [n])` };
+    return { error: bounded(`Unsupported capture path "${path}" (subset: $, .key, ['key'], [n])`) };
   }
   return { name, declaredType, secret, path };
 }
@@ -207,7 +240,13 @@ export function applyCapture(
 // ---------------------------------------------------------------------------
 
 export interface ChainRequestRecord {
-  /** The body that was actually sent (after env substitution). */
+  /**
+   * The request body as recorded for `{{name.request.body.$…}}` references.
+   * The core stores exactly what the adapter passes; the VS Code adapter
+   * deliberately passes a SECRET-SCRUBBED copy of the sent body (issue #47
+   * review F1-R3/r6) so a stored body can never re-surface a secret after
+   * the environment rotates.
+   */
   body: string;
 }
 
@@ -281,6 +320,16 @@ export interface ChainStore {
   ): CaptureRecordResult[];
   getCapture(name: string): CaptureRecord | undefined;
   captureNames(): string[];
+  /**
+   * Secret provenance hints (issue #47 review S4/L1): serialized values of
+   * `secret`-flagged captures whose evaluation succeeded but whose STORE
+   * was rejected (cross-owner/within-call duplicate). The exchange's
+   * response is still recorded, so a later direct reference into it can
+   * carry the rejected secret onto the wire — `prepareChainSend` sweeps
+   * these values exactly like stored secret captures. Bounded, in memory
+   * only, cleared with the store.
+   */
+  secretProvenance(): Array<{ name: string; value: string }>;
   clear(): void;
 }
 
@@ -319,6 +368,9 @@ export function duplicateCaptureNameOf(diagnostic: string): string | undefined {
   return end === -1 ? undefined : diagnostic.slice(DUPLICATE_CAPTURE_PREFIX.length, end);
 }
 
+/** Cap on retained secret-provenance hints per run (hostile capture flood). */
+export const MAX_SECRET_PROVENANCE = 64;
+
 /**
  * Create an empty per-run chain store. Names are matched case-sensitively
  * (they are identifiers); response headers are matched case-insensitively.
@@ -332,6 +384,19 @@ export function createChainStore(): ChainStore {
   const requests = new Map<string, ChainRequestRecord>();
   const responses = new Map<string, ChainResponseRecord>();
   const captures = new Map<string, StoredCapture>();
+  // Rejected-but-evaluated SECRET captures (issue #47 review S4/L1). The
+  // exchange response IS recorded even when the capture store rejects the
+  // name, so the value can return via a direct response reference; we keep
+  // the serialized value as a redaction hint. In memory only, bounded.
+  const secretProvenance: Array<{ name: string; value: string }> = [];
+  const noteSecretRejected = (cap: AppliedCapture): void => {
+    if (!cap.secret) return;
+    const value = serializeValue(cap.value);
+    if (value === '') return;
+    if (secretProvenance.some((p) => p.name === cap.name && p.value === value)) return;
+    if (secretProvenance.length >= MAX_SECRET_PROVENANCE) return;
+    secretProvenance.push({ name: cap.name, value });
+  };
   return {
     recordRequest(name, record) {
       requests.set(name, { body: record.body });
@@ -371,12 +436,14 @@ export function createChainStore(): ChainStore {
       }
       const batchSeen = new Set<string>();
       capturesToStore.forEach((cap, index) => {
-        if (!NAME_RE.test(cap.name)) {
+        if (!isValidChainName(cap.name)) {
+          noteSecretRejected(cap);
           results.push({
             index,
             name: cap.name,
             stored: false,
-            diagnostic: `Invalid capture name '${cap.name}' (must start with a letter or underscore; letters, digits, underscore only)`,
+            // clipped echo + length cap message (issue #47 review r7 S6)
+            diagnostic: `Invalid capture name '${clipName(cap.name)}' (must start with a letter or underscore; letters, digits, underscore only; max ${MAX_CHAIN_NAME_LENGTH} chars)`,
           });
           return;
         }
@@ -391,6 +458,7 @@ export function createChainStore(): ChainStore {
           existing !== undefined &&
           existing.owner === owner;
         if (!refreshesOwn && (existing !== undefined || batchSeen.has(cap.name))) {
+          noteSecretRejected(cap);
           results.push({
             index,
             name: cap.name,
@@ -416,10 +484,14 @@ export function createChainStore(): ChainStore {
     captureNames() {
       return [...captures.keys()];
     },
+    secretProvenance() {
+      return secretProvenance.map((p) => ({ name: p.name, value: p.value }));
+    },
     clear() {
       requests.clear();
       responses.clear();
       captures.clear();
+      secretProvenance.length = 0;
     },
   };
 }
@@ -544,6 +616,10 @@ export function classifyChainReference(
   if (firstDot <= 0) return null;
   const name = inner.slice(0, firstDot);
   if (!NAME_RE.test(name)) return null;
+  // Over-long names cannot be recorded (isValidChainName), so this can
+  // never be chain intent — pass it through as an ordinary env name
+  // instead of building an unbounded malformed diagnostic (r7 S6).
+  if (name.length > MAX_CHAIN_NAME_LENGTH) return null;
   const rest = inner.slice(firstDot + 1);
   const ns = CHAIN_NAMESPACES.find((n) => rest === n || rest.startsWith(`${n}.`));
   if (ns === undefined) return null;
@@ -657,14 +733,29 @@ function nextDoubleBrace(source: string, from: number): number {
   return -1;
 }
 
-function findPlaceholders(source: string): Placeholder[] {
+function findPlaceholders(
+  source: string,
+  maxCount: number,
+): { list: Placeholder[]; truncated: boolean; last: Placeholder | null } {
   const out: Placeholder[] = [];
+  let last: Placeholder | null = null;
+  let opened = 0;
   let i = 0;
   while (i < source.length - 1) {
     if (!(source[i] === '{' && source[i + 1] === '{')) {
       i += 1;
       continue;
     }
+    // Bound counts EVERY opened candidate (issue #47 review r7 LOGIC2):
+    // empty (`{{}}`) and abandoned (`{{a}`) candidates are hostile scan
+    // work too and must consume the budget, or the bound is bypassable
+    // behind a wall of junk placeholders. Stop scanning entirely at the
+    // bound — the caller emits the remaining source verbatim, matching the
+    // "left literal" overflow semantics of MAX_CHAIN_REFS_PER_PASS.
+    if (opened >= maxCount) {
+      return { list: out, truncated: true, last };
+    }
+    opened += 1;
     // Candidate opened at i. Scan for the first top-level `}}`.
     let j = i + 2;
     let closed = -1;
@@ -723,11 +814,13 @@ function findPlaceholders(source: string): Placeholder[] {
     }
     const inner = source.slice(i + 2, closed).trim();
     if (inner.length > 0) {
-      out.push({ start: i, end: closed + 2, full: source.slice(i, closed + 2), inner });
+      const ph = { start: i, end: closed + 2, full: source.slice(i, closed + 2), inner };
+      out.push(ph);
+      last = ph;
     }
     i = closed + 2;
   }
-  return out;
+  return { list: out, truncated: false, last };
 }
 
 /**
@@ -747,9 +840,25 @@ export function resolveChainText(source: string, store: ChainStore): ChainSubsti
 function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubstituteResult {
   const diagnostics: ChainDiagnostic[] = [];
   const captureStart = ctx.resolvedCaptures.length;
-  const placeholders = findPlaceholders(source);
-  if (placeholders.length === 0)
+  // Scan bound (issue #47 review L2): placeholder DISCOVERY is bounded too,
+  // so a hostile body's work/memory is O(bound) rather than O(body).
+  // Remaining text after the bound is emitted verbatim, matching the
+  // "left literal" overflow semantics of MAX_CHAIN_REFS_PER_PASS.
+  const scan = findPlaceholders(source, MAX_CHAIN_REFS_PER_PASS);
+  const placeholders = scan.list;
+  if (placeholders.length === 0) {
+    // Even with nothing listable, the candidate bound can already be hit
+    // (all-empty/abandoned junk) — report it once (issue #47 r7 LOGIC2).
+    if (scan.truncated && !ctx.boundDiagPosted) {
+      ctx.boundDiagPosted = true;
+      diagnostics.push({
+        reference: '',
+        variable: '',
+        message: `Too many placeholder candidates in one pass (limit ${MAX_CHAIN_REFS_PER_PASS} scanned); remainder left literal`,
+      });
+    }
     return { text: source, diagnostics, resolvedCaptures: ctx.resolvedCaptures.slice(captureStart) };
+  }
 
   let out = '';
   let cursor = 0;
@@ -771,8 +880,8 @@ function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubs
           if (!ctx.boundDiagPosted) {
             ctx.boundDiagPosted = true;
             diagnostics.push({
-              reference: ph.full,
-              variable: ph.inner,
+              reference: bounded(ph.full),
+              variable: bounded(ph.inner),
               message: `Too many chain references in one pass (limit ${MAX_CHAIN_REFS_PER_PASS}); remaining chain references left literal`,
             });
           }
@@ -797,8 +906,8 @@ function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubs
       if (!ctx.boundDiagPosted) {
         ctx.boundDiagPosted = true;
         diagnostics.push({
-          reference: ph.full,
-          variable: ph.inner,
+          reference: bounded(ph.full),
+          variable: bounded(ph.inner),
           message: `Too many chain references in one pass (limit ${MAX_CHAIN_REFS_PER_PASS}); remaining chain references left literal`,
         });
       }
@@ -808,19 +917,46 @@ function resolveChainTextWith(ctx: ResolutionContext, source: string): ChainSubs
     ctx.chainRefs += 1;
 
     if ('malformed' in classified) {
-      diagnostics.push({ reference: ph.full, variable: ph.inner, message: classified.malformed });
+      diagnostics.push({
+        reference: bounded(ph.full),
+        variable: bounded(ph.inner),
+        message: bounded(classified.malformed),
+      });
       out += ph.full;
       continue;
     }
     const resolved = resolveReference(classified.ref, ctx);
     if ('error' in resolved) {
-      diagnostics.push({ reference: ph.full, variable: ph.inner, message: resolved.error });
+      diagnostics.push({
+        reference: bounded(ph.full),
+        variable: bounded(ph.inner),
+        message: bounded(resolved.error),
+      });
       out += ph.full;
       continue;
     }
     out += resolved.value;
   }
   out += source.slice(cursor);
+  if (scan.truncated && !ctx.boundDiagPosted) {
+    ctx.boundDiagPosted = true;
+    // An all-empty/abandoned candidate list has no placeholder to echo;
+    // report the bound generically (issue #47 review r7 LOGIC2).
+    const anchor = scan.last;
+    diagnostics.push(
+      anchor !== null
+        ? {
+            reference: bounded(anchor.full),
+            variable: bounded(anchor.inner),
+            message: `Too many placeholders in one pass (limit ${MAX_CHAIN_REFS_PER_PASS} scanned); remainder left literal`,
+          }
+        : {
+            reference: '',
+            variable: '',
+            message: `Too many placeholder candidates in one pass (limit ${MAX_CHAIN_REFS_PER_PASS} scanned); remainder left literal`,
+          },
+    );
+  }
   return {
     text: out,
     diagnostics,
@@ -866,21 +1002,22 @@ export function resolveChainRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * Validate `# @name` identifiers across one file: alnum + underscore and
- * unique per file (issue #47). Returns human-readable diagnostics.
+ * Validate `# @name` identifiers across one file: alnum + underscore,
+ * length-bounded, and unique per file (issue #47). Returns human-readable
+ * diagnostics with clipped identifier echoes (review S6).
  */
 export function validateRequestNames(names: readonly string[]): string[] {
   const diagnostics: string[] = [];
   const seen = new Set<string>();
   for (const name of names) {
-    if (!NAME_RE.test(name)) {
+    if (!isValidChainName(name)) {
       diagnostics.push(
-        `Invalid request name '${name}' (must start with a letter or underscore; letters, digits, underscore only)`,
+        `Invalid request name '${clipName(name)}' (must start with a letter or underscore; letters, digits, underscore only; max ${MAX_CHAIN_NAME_LENGTH} chars)`,
       );
       continue;
     }
     if (seen.has(name)) {
-      diagnostics.push(`duplicate request name '${name}' (names must be unique per file)`);
+      diagnostics.push(`duplicate request name '${clipName(name)}' (names must be unique per file)`);
       continue;
     }
     seen.add(name);

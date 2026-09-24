@@ -447,6 +447,131 @@ describe('recordChainExchange', () => {
     expect(capDiag[0]).toContain('ignored 20');
   });
 
+  it('a rejected SECRET capture keeps value-equality provenance (issue #47 review S4/L1)', () => {
+    // Collision-rejected secret captures must not lose provenance: the
+    // exchange's response IS recorded, so a later direct reference into it
+    // can carry the rejected secret onto the wire. The store must retain
+    // the secret VALUE (not just successfully stored captures) so the
+    // prepareChainSend value-equality sweep still lists it for redaction.
+    const store = createChainStore();
+    const FIRST = 'own' + 'erfirst';
+    const SECOND = 'colli' + 'sionsecond';
+    const ok1 = recordChainExchange(
+      store,
+      'loginA',
+      ['tok: string secret = $.t'],
+      '',
+      exchange({ body: JSON.stringify({ t: FIRST }) }),
+    );
+    expect(ok1.applied).toHaveLength(1);
+    const ok2 = recordChainExchange(
+      store,
+      'loginB',
+      ['tok: string secret = $.t'], // same name, DIFFERENT owner -> rejected
+      '',
+      exchange({ body: JSON.stringify({ t: SECOND }) }),
+    );
+    expect(ok2.applied).toHaveLength(0);
+    expect(ok2.diagnostics.some((d) => d.includes('duplicate capture name'))).toBe(true);
+    // loginB's response is recorded (atomicity) — direct refs into it must
+    // still be treated as the secret value.
+    const out = prepareChainSend(
+      { url: `https://api.test/x?v={{loginB.response.body.$.t}}`, headers: [], body: '' },
+      store,
+    );
+    expect(out.url).toBe(`https://api.test/x?v=${SECOND}`);
+    expect(out.resolvedSecrets).toContain(SECOND);
+    expect(out.resolvedSecretNames).toContain('tok');
+  });
+
+  it('a rejected NON-SECRET capture contributes no provenance hint', () => {
+    const store = createChainStore();
+    recordChainExchange(store, 'loginA', ['tok = $.t'], '', exchange({ body: '{"t":"one"}' }));
+    recordChainExchange(
+      store,
+      'loginB',
+      ['tok = $.t'],
+      '',
+      exchange({ body: '{"t":"two"}' }),
+    );
+    const out = prepareChainSend(
+      { url: 'https://api.test/x?v={{loginB.response.body.$.t}}', headers: [], body: '' },
+      store,
+    );
+    expect(out.url).toBe('https://api.test/x?v=two');
+    expect(out.resolvedSecrets).toEqual([]);
+  });
+
+  it('exchange recording FAILS CLOSED once the secret-provenance quota is exhausted (review r7 SEC2)', () => {
+    // Beyond MAX_SECRET_PROVENANCE (64) REJECTED secret captures, silently
+    // dropping further hints is fail-open: the recorded response would let
+    // a later direct reference carry the 65th secret unredacted. Once the
+    // quota is exhausted, any exchange carrying a SECRET capture directive
+    // must be REFUSED outright, so the value is never referenceable at all.
+    const store = createChainStore();
+    recordChainExchange(store, 'seed', ['tok: string secret = $.t'], '', exchange({ body: '{"t":"seed0"}' }));
+    for (let i = 1; i <= 64; i++) {
+      const r = recordChainExchange(
+        store,
+        `c${i}`,
+        ['tok: string secret = $.t'], // same name, different owner -> rejected
+        '',
+        exchange({ body: `{"t":"secretval${i}"}` }),
+      );
+      expect(r.applied).toHaveLength(0);
+    }
+    // Quota now exhausted. A further exchange with a secret capture
+    // directive must fail closed (nothing recorded).
+    const blocked = recordChainExchange(
+      store,
+      'late',
+      ['tok: string secret = $.t'],
+      '',
+      exchange({ body: '{"t":"hiddenval"}' }),
+    );
+    expect(blocked.applied).toHaveLength(0);
+    expect(blocked.diagnostics.some((d) => d.includes('secret-provenance'))).toBe(true);
+    const out = prepareChainSend(
+      { url: 'https://api.test/x?v={{late.response.body.$.t}}', headers: [], body: '' },
+      store,
+    );
+    // The reference fails loudly (nothing recorded), never resolving to the
+    // hidden value (issue #47 error semantics: unresolved refs stay literal).
+    expect(out.url).not.toContain('hiddenval');
+    expect(out.diagnostics.length).toBeGreaterThan(0);
+    // A NON-secret-capture exchange still records normally at exhaustion.
+    recordChainExchange(store, 'plain', ['ptok = $.t'], '', exchange({ body: '{"t":"plainval"}' }));
+    const ok = prepareChainSend(
+      { url: 'https://api.test/x?v={{plain.response.body.$.t}}', headers: [], body: '' },
+      store,
+    );
+    expect(ok.url).toBe('https://api.test/x?v=plainval');
+  });
+
+  it('an UNNAMED secret capture rejected as duplicate keeps provenance too', () => {
+    const store = createChainStore();
+    recordChainExchange(
+      store,
+      'loginA',
+      ['tok: string secret = $.t'],
+      '',
+      exchange({ body: '{"t":"one"}' }),
+    );
+    const anon = recordChainExchange(
+      store,
+      undefined,
+      ['tok: string secret = $.t'],
+      '',
+      exchange({ body: '{"t":"anonsecret"}' }),
+    );
+    expect(anon.applied).toHaveLength(0);
+    const out = prepareChainSend(
+      { url: 'https://api.test/x?q=anonsecret', headers: [], body: '' },
+      store,
+    );
+    expect(out.resolvedSecrets).toContain('anonsecret');
+  });
+
   it('evaluates N capture directives against ONE JSON parse of the response body (B5)', () => {
     // Hostile-input bound (issue #47 review B5): capture evaluation must not
     // re-parse the (potentially large) response body once per directive.

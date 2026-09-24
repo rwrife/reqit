@@ -27,6 +27,8 @@ import { MAX_CAPTURES_PER_REQUEST } from '../parser.js';
 import {
   applyCapture,
   isValidChainName,
+  MAX_SECRET_PROVENANCE,
+  parseCaptureDirective,
   resolveChainRequest,
   serializeValue,
   validateRequestNames,
@@ -86,12 +88,21 @@ export function prepareChainSend(
   // boundary cannot be bypassed by ref style. Substring equality is exactly
   // the matching the adapter's `redactSecretText` performs downstream, so a
   // value listed here is a value that WILL be redacted there.
-  const secretCaptures = store
+  // The sweep also covers REJECTED-but-evaluated secret captures (issue #47
+  // review S4/L1): their exchange's response IS recorded, so a direct
+  // reference into it can carry the rejected secret onto the wire.
+  const secretCaptures: Array<{ name: string; value: string }> = store
     .captureNames()
     .map((name) => ({ name, record: store.getCapture(name) }))
     .filter((entry): entry is { name: string; record: { value: unknown; secret: true } } =>
       entry.record !== undefined && entry.record.secret === true,
-    );
+    )
+    .map((entry) => ({ name: entry.name, value: serializeValue(entry.record.value) }));
+  for (const hint of store.secretProvenance()) {
+    if (!secretCaptures.some((c) => c.value === hint.value)) {
+      secretCaptures.push(hint);
+    }
+  }
   if (secretCaptures.length > 0) {
     const surfaces = [
       resolved.url,
@@ -99,7 +110,7 @@ export function prepareChainSend(
       ...resolved.headers.map((h) => h.value),
     ];
     for (const entry of secretCaptures) {
-      const value = serializeValue(entry.record.value);
+      const value = entry.value;
       if (value === '' || secrets.has(value)) continue;
       if (surfaces.some((text) => text.includes(value))) addSecret(entry.name, value);
     }
@@ -134,8 +145,9 @@ export interface ChainRecordResult {
  *   request — the exchange still applies its captures, it just cannot be
  *   referenced by name later).
  * - `captures` are raw `# @capture` directive sources (from the parser).
- * - `sentBody` is the body that was actually sent (post-substitution),
- *   recorded so `{{name.request.body.$.path}}` can read it later.
+ * - `sentBody` is the body recorded for `{{name.request.body.$.path}}`
+ *   references. The core stores it verbatim; the VS Code adapter passes the
+ *   secret-scrubbed copy of the wire body (issue #47 review F1-R3/r6).
  * - A `received: false` exchange mutates nothing.
  */
 export function recordChainExchange(
@@ -167,6 +179,29 @@ export function recordChainExchange(
         `${captureSources.length - MAX_CAPTURES_PER_REQUEST} (capture limit)`,
     );
     captureSources = captureSources.slice(0, MAX_CAPTURES_PER_REQUEST);
+  }
+
+  // Fail-closed secret-provenance quota (issue #47 review r7 SEC2): the
+  // value-equality sweep can only redact secrets whose REJECTED capture
+  // values the store still remembers (bounded, in memory). Once the quota
+  // is exhausted, recording a NAMED exchange that carries a `secret`
+  // capture directive would store a response whose potential secret can no
+  // longer be guaranteed swept — so refuse the whole recording (the value
+  // is then not referenceable at all) instead of silently dropping the
+  // hint. Unnamed exchanges record no response, so they cannot leak this
+  // way and are unaffected, as are exchanges without secret directives.
+  if (
+    name !== undefined &&
+    store.secretProvenance().length >= MAX_SECRET_PROVENANCE &&
+    captureSources.some((src) => {
+      const parsed = parseCaptureDirective(src);
+      return !('error' in parsed) && parsed.secret === true;
+    })
+  ) {
+    diagnostics.push(
+      `request not recorded: secret-capture provenance quota (${MAX_SECRET_PROVENANCE}) exhausted for this run — the response would not be safely redactable (secret-provenance limit)`,
+    );
+    return { applied: [], diagnostics };
   }
 
   const responseRecord = {
