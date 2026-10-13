@@ -166,6 +166,8 @@ async function listDir(uri: vscode.Uri): Promise<RequestsNode[]> {
   }
   const out: RequestsNode[] = [];
   for (const [name, type] of entries) {
+    // ponytail: skip links reported by discovery; race-safe confinement needs no-follow I/O.
+    if (type & vscode.FileType.SymbolicLink) continue;
     const child = vscode.Uri.joinPath(uri, name);
     if (type & vscode.FileType.Directory) {
       out.push(new FolderNode(name, child));

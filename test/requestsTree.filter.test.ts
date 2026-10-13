@@ -201,6 +201,19 @@ describe('request explorer open editor consistency', () => {
   });
 });
 
+describe('request explorer symlink discovery', () => {
+  it('does not discover symlinked file and folder entries', async () => {
+    host.readDirectory.mockResolvedValue([
+      ['link.http', 1 | 64],
+      ['link-folder', 2 | 64],
+      ['real.http', 1],
+    ]);
+    const provider = new RequestsTreeProvider();
+    expect((await provider.getChildren()).map((node) => node.label)).toEqual(['real.http']);
+    expect(host.readFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('request explorer method filter', () => {
   it('All methods restores request order and removes the filter indicator; Escape keeps it', async () => {
     const view = { description: undefined };
