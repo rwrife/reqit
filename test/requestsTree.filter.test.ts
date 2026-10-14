@@ -214,6 +214,89 @@ describe('request explorer symlink discovery', () => {
   });
 });
 
+describe('request explorer tag filter', () => {
+  it('filters parsed HTTP requests by exact tag token while preserving original send anchors', async () => {
+    host.readFile.mockResolvedValue(new TextEncoder().encode([
+      '### A', '# @tag smoke, regression', 'GET https://example.test/a', '',
+      '### B', '# @tag smoketest', 'POST https://example.test/b', '',
+      '### C', '# @tag SMOKE', 'POST https://example.test/c', '',
+      '### D', 'GET https://example.test/smoke', '',
+    ].join('\n')));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const all = await provider.getChildren(file);
+    provider.setTagFilter(' SmOkE ');
+    const matches = await provider.getChildren(file);
+    expect(matches.map((node) => node.label)).toEqual(['A', 'C']);
+    expect(matches.map((node) => node.toTreeItem().command)).toEqual([
+      all[0].toTreeItem().command, all[2].toTreeItem().command,
+    ]);
+    provider.setMethodFilter('POST');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['C']);
+    provider.setNameFilter('a');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['No requests match current filters']);
+    provider.setNameFilter('');
+    provider.setTagFilter('');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['B', 'C']);
+  });
+
+  it('ignores invalid and oversized tag filters before preprocessing', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTagFilter('smoke');
+    host.fire.mockClear();
+    for (const input of [null, 1, {}, ['smoke'], 'x'.repeat(129), 'bad,tag']) {
+      expect(provider.setTagFilter(input)).toBe(false);
+    }
+    expect(host.fire).not.toHaveBeenCalled();
+    expect((await provider.getChildren(file))[0].kind).toBe('message');
+  });
+
+  it('does not match gRPC targets or private headers and leaves files lazy', async () => {
+    host.readDirectory.mockResolvedValue([['echo.grpc', 1], ['a.http', 1]]);
+    host.readFile.mockImplementation(async (uri: { path: string }) => new TextEncoder().encode(
+      uri.path.endsWith('.grpc')
+        ? 'GRPC smoke.example:50051/echo.Service/Smoke\n\n{}'
+        : '### A\nGET https://example.test/smoke\nX-Tag: smoke\n\nsmoke',
+    ));
+    const provider = new RequestsTreeProvider();
+    provider.setTagFilter('smoke');
+    const [http, grpc] = await provider.getChildren();
+    expect(host.readFile).not.toHaveBeenCalled();
+    expect((await provider.getChildren(http))[0].kind).toBe('message');
+    expect((await provider.getChildren(grpc))[0].kind).toBe('message');
+  });
+
+  it('activates a bounded private tag prompt and never displays search text', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.searchRequestsByTag');
+    expect(command).toBeDefined();
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'reqit.searchRequestsByTag', when: 'view == reqit.requests', group: 'navigation',
+    });
+    const run: () => Promise<void> = command![1];
+    host.showInputBox.mockImplementationOnce(async (options: {
+      password: boolean; validateInput: (s: string) => string | undefined;
+    }) => {
+      expect(options.password).toBe(true);
+      expect(options.validateInput('x'.repeat(129))).toBeDefined();
+      expect(options.validateInput('bad,tag')).toBeDefined();
+      return 'smoke';
+    });
+    await run();
+    expect(view.description).toBe('Tag search active');
+    expect(view.description).not.toContain('smoke');
+    host.showInputBox.mockResolvedValueOnce(undefined);
+    await run();
+    expect(view.description).toBe('Tag search active');
+    host.showInputBox.mockResolvedValueOnce('');
+    await run();
+    expect(view.description).toBeUndefined();
+  });
+});
+
 describe('request explorer method filter', () => {
   it('All methods restores request order and removes the filter indicator; Escape keeps it', async () => {
     const view = { description: undefined };

@@ -115,6 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let filterPickerGeneration = 0;
   let nameSearchPromptGeneration = 0;
   let urlSearchPromptGeneration = 0;
+  let tagSearchPromptGeneration = 0;
 
   const updateRequestsTreeDescription = (): void => {
     const parts: string[] = [];
@@ -122,6 +123,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (methodFilter) parts.push(`Method: ${methodFilter}`);
     if (treeProvider.hasNameSearchFilter()) parts.push('Name search active');
     if (treeProvider.hasUrlSearchFilter()) parts.push('URL search active');
+    if (treeProvider.hasTagSearchFilter()) parts.push('Tag search active');
     treeView.description = parts.length > 0 ? parts.join(' • ') : undefined;
   };
 
@@ -216,6 +218,27 @@ export function activate(context: vscode.ExtensionContext): void {
       if (generation !== urlSearchPromptGeneration || input === undefined) return;
       treeProvider.setUrlFilter(input);
       updateRequestsTreeDescription();
+    }),
+    vscode.commands.registerCommand('reqit.searchRequestsByTag', async () => {
+      const generation = ++tagSearchPromptGeneration;
+      const input = await vscode.window.showInputBox({
+        title: 'Search requests by tag',
+        placeHolder: 'Case-insensitive exact match on # @tag values (empty clears)',
+        password: true,
+        validateInput: (value: string) =>
+          value.length > REQUEST_NAME_SEARCH_MAX_LENGTH
+            ? `Tag search must be ${REQUEST_NAME_SEARCH_MAX_LENGTH} characters or fewer.`
+            : value.includes(',')
+              ? 'Tag search matches one tag; commas separate tags inside a # @tag directive.'
+              : undefined,
+      });
+      if (generation !== tagSearchPromptGeneration) return;
+      if (input === undefined) {
+        // Escape keeps the active filter (native-view search semantics).
+        if (treeProvider.hasTagSearchFilter()) updateRequestsTreeDescription();
+        return;
+      }
+      if (treeProvider.setTagFilter(input)) updateRequestsTreeDescription();
     }),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),
