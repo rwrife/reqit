@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js';
+import { parseTagList } from '../core/tags.js';
 
 /**
  * Tree view backing "Reqit Requests".
@@ -19,6 +20,32 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
   private methodFilter: string | undefined;
   private nameSearchFilter: string | undefined;
   private urlSearchFilter: string | undefined;
+  private tagSearchFilter: string | undefined;
+
+  hasTagSearchFilter(): boolean {
+    return this.tagSearchFilter !== undefined;
+  }
+
+  /**
+   * Exact (case-insensitive) single-tag filter over `# @tag` directive
+   * tokens. A comma separates tags inside the directive, so a comma can
+   * never occur in one token: filter text containing one is invalid input,
+   * not a query that silently matches nothing.
+   */
+  setTagFilter(query: unknown): boolean {
+    if (query !== undefined && typeof query !== 'string') return false;
+    let normalized: string | undefined;
+    if (typeof query === 'string') {
+      const trimmed = query.trim().toLowerCase();
+      if (trimmed.length > REQUEST_NAME_SEARCH_MAX_LENGTH) return false;
+      if (trimmed.includes(',')) return false;
+      if (trimmed.length > 0) normalized = trimmed;
+    }
+    if (this.tagSearchFilter === normalized) return false;
+    this.tagSearchFilter = normalized;
+    this.refresh();
+    return true;
+  }
 
   hasUrlSearchFilter(): boolean {
     return this.urlSearchFilter !== undefined;
@@ -96,16 +123,22 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
       const methodFilter = this.methodFilter;
       const nameSearchFilter = this.nameSearchFilter;
       const urlSearchFilter = this.urlSearchFilter;
+      const tagSearchFilter = this.tagSearchFilter;
       const filtered = requests.filter(
         (request) =>
           matchesMethodFilter(request, methodFilter) &&
           matchesNameFilter(request, nameSearchFilter) &&
           (urlSearchFilter === undefined ||
             (request.kind === 'request' &&
-              request.request.url.toLowerCase().includes(urlSearchFilter))),
+              request.request.url.toLowerCase().includes(urlSearchFilter))) &&
+          matchesTagFilter(request, tagSearchFilter),
       );
       return requests.length > 0 && filtered.length === 0
-        ? [new MessageNode(noMatchMessage(methodFilter, nameSearchFilter, urlSearchFilter))]
+        ? [
+            new MessageNode(
+              noMatchMessage(methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter),
+            ),
+          ]
         : filtered;
     }
     return [];
@@ -131,12 +164,28 @@ function matchesNameFilter(request: RequestsNode, nameSearchFilter: string | und
   return false;
 }
 
+function matchesTagFilter(request: RequestsNode, tagSearchFilter: string | undefined): boolean {
+  if (tagSearchFilter === undefined) return true;
+  // gRPC requests have no directive surface yet; tags are HTTP-only, like
+  // URL search, rather than a second label guess.
+  return (
+    request.kind === 'request' && parseTagList(request.request.directives['tag']).includes(
+      tagSearchFilter,
+    )
+  );
+}
+
 function noMatchMessage(
   methodFilter: string | undefined,
   nameSearchFilter: string | undefined,
   urlSearchFilter: string | undefined,
+  tagSearchFilter: string | undefined,
 ): string {
-  if ([methodFilter, nameSearchFilter, urlSearchFilter].filter((v) => v !== undefined).length > 1) {
+  if (
+    [methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter].filter(
+      (v) => v !== undefined,
+    ).length > 1
+  ) {
     return 'No requests match current filters';
   }
   if (nameSearchFilter !== undefined) {
@@ -144,6 +193,9 @@ function noMatchMessage(
   }
   if (urlSearchFilter !== undefined) {
     return 'No requests match the active URL search';
+  }
+  if (tagSearchFilter !== undefined) {
+    return 'No requests match the active tag search';
   }
   return 'No requests match the method filter';
 }
