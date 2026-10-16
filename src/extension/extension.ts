@@ -116,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let nameSearchPromptGeneration = 0;
   let urlSearchPromptGeneration = 0;
   let tagSearchPromptGeneration = 0;
+  let textSearchPromptGeneration = 0;
 
   const updateRequestsTreeDescription = (): void => {
     const parts: string[] = [];
@@ -124,6 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (treeProvider.hasNameSearchFilter()) parts.push('Name search active');
     if (treeProvider.hasUrlSearchFilter()) parts.push('URL search active');
     if (treeProvider.hasTagSearchFilter()) parts.push('Tag search active');
+    if (treeProvider.hasTextSearchFilter()) parts.push('Text search active');
     treeView.description = parts.length > 0 ? parts.join(' • ') : undefined;
   };
 
@@ -239,6 +241,26 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       if (treeProvider.setTagFilter(input)) updateRequestsTreeDescription();
+    }),
+    vscode.commands.registerCommand('reqit.searchRequestsByText', async () => {
+      const generation = ++textSearchPromptGeneration;
+      const input = await vscode.window.showInputBox({
+        title: 'Search request text',
+        placeHolder: 'Literal text within each request section, unresolved (empty clears)',
+        // Masked: request bodies and headers can contain secrets.
+        password: true,
+        validateInput: (value: string) =>
+          value.length > REQUEST_NAME_SEARCH_MAX_LENGTH
+            ? `Text search must be ${REQUEST_NAME_SEARCH_MAX_LENGTH} characters or fewer.`
+            : undefined,
+      });
+      if (generation !== textSearchPromptGeneration) return;
+      if (input === undefined) {
+        // Escape keeps the active filter (native-view search semantics).
+        if (treeProvider.hasTextSearchFilter()) updateRequestsTreeDescription();
+        return;
+      }
+      if (treeProvider.setTextFilter(input)) updateRequestsTreeDescription();
     }),
     vscode.commands.registerCommand('reqit.selectEnv', () => envManager.pickEnv()),
     vscode.commands.registerCommand('reqit.saveSseTranscript', () => saveLastSseTranscript()),

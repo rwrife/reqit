@@ -74,6 +74,18 @@ vi.mock('../src/extension/envManager.js', () => ({
   },
 }));
 
+// Spy (pass-through) on the HTTP parser so tests can prove oversized sources
+// are refused BEFORE any parsing work happens.
+const parserSpy = vi.hoisted(() => ({ parseHttpFile: vi.fn() }));
+vi.mock('../src/core/parser.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/core/parser.js')>();
+  const wrapped = (...args: Parameters<typeof actual.parseHttpFile>) => {
+    parserSpy.parseHttpFile();
+    return actual.parseHttpFile(...args);
+  };
+  return { ...actual, parseHttpFile: wrapped };
+});
+
 import {
   REQUEST_NAME_SEARCH_MAX_LENGTH,
   RequestsTreeProvider,
@@ -211,6 +223,145 @@ describe('request explorer symlink discovery', () => {
     const provider = new RequestsTreeProvider();
     expect((await provider.getChildren()).map((node) => node.label)).toEqual(['real.http']);
     expect(host.readFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('request explorer text search', () => {
+  it('matches literal text only in its own request section and composes with method and tag', async () => {
+    host.readFile.mockResolvedValue(new TextEncoder().encode([
+      '### A', '# @tag smoke', 'GET https://example.test/a', 'X-Note: needle', '',
+      '### B', '# @tag smoke', 'POST https://example.test/b', 'X-Note: other', '',
+      '### C', '# @tag regression', 'POST https://example.test/c', '', 'needle', '',
+      '### D', 'GET https://example.test/d', 'X-Note: other', '',
+    ].join('\n')));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const all = await provider.getChildren(file);
+    provider.setTextFilter('NeEdLe');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['A', 'C']);
+    provider.setMethodFilter('POST');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['C']);
+    provider.setTagFilter('smoke');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['No requests match current filters']);
+    provider.setTagFilter('');
+    expect((await provider.getChildren(file))[0].toTreeItem().command).toEqual(all[2].toTreeItem().command);
+    expect(host.readDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches gRPC section text without crossing into adjacent requests', async () => {
+    host.readDirectory.mockResolvedValue([['echo.grpc', 1]]);
+    host.readFile.mockResolvedValue(new TextEncoder().encode([
+      '### First', 'GRPC localhost:50051/echo.Service/Say', '', '{"message":"needle"}',
+      '### Second', 'GRPC localhost:50051/echo.Service/Ping', '', '{"message":"other"}',
+    ].join('\n')));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTextFilter('needle');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['First']);
+    provider.setTextFilter('absent');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['No requests match the active text search']);
+  });
+
+  it('rejects invalid and oversized input without clearing an active filter', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTextFilter('items');
+    host.fire.mockClear();
+    for (const input of [null, 1, {}, ['items'], 'x'.repeat(129)]) {
+      expect(provider.setTextFilter(input)).toBe(false);
+    }
+    expect(host.fire).not.toHaveBeenCalled();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List', 'Create']);
+  });
+
+  it('keeps folder discovery lazy and reads current selection after a pending file read', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTextFilter('list');
+    expect(host.readFile).not.toHaveBeenCalled();
+    let finish!: (value: Uint8Array) => void;
+    host.readFile.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const reading = provider.getChildren(file);
+    provider.setTextFilter('post');
+    finish(new TextEncoder().encode(source));
+    // The search targets section text, not the preceding ### name line.
+    expect((await reading).map((node) => node.label)).toEqual(['Create']);
+  });
+
+  it('refuses oversized source text instead of scanning it or claiming no matches', async () => {
+    host.readFile.mockResolvedValue(new TextEncoder().encode(
+      `### Large\nPOST https://example.test/a\n\n${'x'.repeat(1_048_577)}needle`,
+    ));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTextFilter('needle');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'File too large for text search',
+    ]);
+    // Rejection must happen before any parse, not merely before the scan.
+    expect(parserSpy.parseHttpFile).not.toHaveBeenCalled();
+  });
+
+  it('accepts text search at the exact source-length bound', async () => {
+    const prefix = '### Exact\nPOST https://example.test/a\n\nneedle';
+    const atBound = prefix + 'x'.repeat(1_048_576 - prefix.length);
+    expect(atBound.length).toBe(1_048_576);
+    host.readFile.mockResolvedValue(new TextEncoder().encode(atBound));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    provider.setTextFilter('needle');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['Exact']);
+    expect(parserSpy.parseHttpFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a stale text-search prompt completion after a newer prompt', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const run: () => Promise<void> = host.registerCommand.mock.calls.find(
+      ([name]) => name === 'reqit.searchRequestsByText',
+    )![1];
+    let first!: (value: string | undefined) => void;
+    host.showInputBox.mockImplementationOnce(() => new Promise((resolve) => { first = resolve; }));
+    const firstRun = run();
+    host.showInputBox.mockResolvedValueOnce('newest');
+    await run();
+    first('stale');
+    await firstRun;
+    expect(view.description).toBe('Text search active');
+    // Newest query remains active: re-entering it does not fire a refresh.
+    host.fire.mockClear();
+    host.showInputBox.mockResolvedValueOnce('newest');
+    await run();
+    expect(host.fire).not.toHaveBeenCalled();
+  });
+
+  it('uses masked input, never echoes query, and preserves filter on Escape', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.searchRequestsByText');
+    expect(command).toBeDefined();
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'reqit.searchRequestsByText', when: 'view == reqit.requests', group: 'navigation',
+    });
+    const run: () => Promise<void> = command![1];
+    host.showInputBox.mockImplementationOnce(async (options: {
+      password: boolean; validateInput: (s: string) => string | undefined;
+    }) => {
+      expect(options.password).toBe(true);
+      expect(options.validateInput('x'.repeat(129))).toBeDefined();
+      return 'private-key-needle';
+    });
+    await run();
+    expect(view.description).toBe('Text search active');
+    expect(view.description).not.toContain('private-key-needle');
+    host.showInputBox.mockResolvedValueOnce(undefined);
+    await run();
+    expect(view.description).toBe('Text search active');
+    host.showInputBox.mockResolvedValueOnce('');
+    await run();
+    expect(view.description).toBeUndefined();
   });
 });
 
