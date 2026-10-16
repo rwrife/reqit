@@ -161,6 +161,12 @@
         "icon": "$(tag)"
       },
       {
+        "command": "reqit.searchRequestsByText",
+        "title": "Reqit: Search Request Text",
+        "category": "Reqit",
+        "icon": "$(whole-word)"
+      },
+      {
         "command": "reqit.selectEnv",
         "title": "Reqit: Select Environment",
         "category": "Reqit"
@@ -224,6 +230,11 @@
         },
         {
           "command": "reqit.searchRequestsByTag",
+          "when": "view == reqit.requests",
+          "group": "navigation"
+        },
+        {
+          "command": "reqit.searchRequestsByText",
           "when": "view == reqit.requests",
           "group": "navigation"
         },

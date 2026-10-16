@@ -12,6 +12,14 @@ import { parseTagList } from '../core/tags.js';
  */
 export const REQUEST_NAME_SEARCH_MAX_LENGTH = 128;
 
+/**
+ * Upper bound on the source length eligible for section text search
+ * (issue #56). Searching joins a per-line scan across the whole file on
+ * every expand, so oversized files get an explicit refusal instead of an
+ * unbounded synchronous scan or a misleading "no matches" message.
+ */
+export const REQUEST_TEXT_SEARCH_MAX_SOURCE_LENGTH = 1_048_576;
+
 export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNode> {
   private readonly _onDidChange = new vscode.EventEmitter<RequestsNode | undefined>();
   readonly onDidChangeTreeData = this._onDidChange.event;
@@ -21,6 +29,21 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
   private nameSearchFilter: string | undefined;
   private urlSearchFilter: string | undefined;
   private tagSearchFilter: string | undefined;
+  private textSearchFilter: string | undefined;
+
+  hasTextSearchFilter(): boolean {
+    return this.textSearchFilter !== undefined;
+  }
+
+  setTextFilter(query: unknown): boolean {
+    if (query !== undefined && typeof query !== 'string') return false;
+    if (typeof query === 'string' && query.length > REQUEST_NAME_SEARCH_MAX_LENGTH) return false;
+    const normalized = query === undefined || query.length === 0 ? undefined : query.toLowerCase();
+    if (this.textSearchFilter === normalized) return false;
+    this.textSearchFilter = normalized;
+    this.refresh();
+    return true;
+  }
 
   hasTagSearchFilter(): boolean {
     return this.tagSearchFilter !== undefined;
@@ -117,13 +140,20 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
       return listDir(node.uri);
     }
     if (node.kind === 'file') {
-      const requests = await parseFileRequests(node.uri);
+      const { nodes: requests, lines, tooLargeForTextSearch } = await parseFileRequests(
+        node.uri,
+        () => this.textSearchFilter !== undefined,
+      );
       // Read current filters AFTER I/O so a late read cannot restore obsolete
       // selections. Do not renumber nodes: their send anchors survive.
       const methodFilter = this.methodFilter;
       const nameSearchFilter = this.nameSearchFilter;
       const urlSearchFilter = this.urlSearchFilter;
       const tagSearchFilter = this.tagSearchFilter;
+      const textSearchFilter = this.textSearchFilter;
+      if (tooLargeForTextSearch) {
+        return [new MessageNode('File too large for text search')];
+      }
       const filtered = requests.filter(
         (request) =>
           matchesMethodFilter(request, methodFilter) &&
@@ -131,12 +161,19 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
           (urlSearchFilter === undefined ||
             (request.kind === 'request' &&
               request.request.url.toLowerCase().includes(urlSearchFilter))) &&
-          matchesTagFilter(request, tagSearchFilter),
+          matchesTagFilter(request, tagSearchFilter) &&
+          matchesTextFilter(lines, request, textSearchFilter),
       );
       return requests.length > 0 && filtered.length === 0
         ? [
             new MessageNode(
-              noMatchMessage(methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter),
+              noMatchMessage(
+                methodFilter,
+                nameSearchFilter,
+                urlSearchFilter,
+                tagSearchFilter,
+                textSearchFilter,
+              ),
             ),
           ]
         : filtered;
@@ -175,14 +212,31 @@ function matchesTagFilter(request: RequestsNode, tagSearchFilter: string | undef
   );
 }
 
+function matchesTextFilter(
+  lines: string[],
+  request: RequestsNode,
+  textSearchFilter: string | undefined,
+): boolean {
+  if (textSearchFilter === undefined) return true;
+  // Section-scoped literal search: both request kinds carry [startLine,
+  // endLine) from their parser, so matching stays on source the user can
+  // see in the file and never invents a cross-request match.
+  if (request.kind !== 'request' && request.kind !== 'grpc-request') return false;
+  for (let i = request.request.startLine; i < request.request.endLine && i < lines.length; i++) {
+    if (lines[i].toLowerCase().includes(textSearchFilter)) return true;
+  }
+  return false;
+}
+
 function noMatchMessage(
   methodFilter: string | undefined,
   nameSearchFilter: string | undefined,
   urlSearchFilter: string | undefined,
   tagSearchFilter: string | undefined,
+  textSearchFilter: string | undefined,
 ): string {
   if (
-    [methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter].filter(
+    [methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter, textSearchFilter].filter(
       (v) => v !== undefined,
     ).length > 1
   ) {
@@ -196,6 +250,9 @@ function noMatchMessage(
   }
   if (tagSearchFilter !== undefined) {
     return 'No requests match the active tag search';
+  }
+  if (textSearchFilter !== undefined) {
+    return 'No requests match the active text search';
   }
   return 'No requests match the method filter';
 }
@@ -235,7 +292,14 @@ async function listDir(uri: vscode.Uri): Promise<RequestsNode[]> {
   return out;
 }
 
-async function parseFileRequests(uri: vscode.Uri): Promise<RequestsNode[]> {
+async function parseFileRequests(
+  uri: vscode.Uri,
+  textSearchActive: () => boolean,
+): Promise<{ nodes: RequestsNode[]; lines: string[]; tooLargeForTextSearch: boolean }> {
+  const empty = { nodes: [], lines: [], tooLargeForTextSearch: false };
+  // Evaluated after the read: a filter set during a pending read still gates.
+  const oversized = (text: string) =>
+    text.length > REQUEST_TEXT_SEARCH_MAX_SOURCE_LENGTH && textSearchActive();
   const openText = (): string | undefined =>
     vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === uri.toString())?.getText();
   let text = openText();
@@ -246,15 +310,19 @@ async function parseFileRequests(uri: vscode.Uri): Promise<RequestsNode[]> {
       text = openText() ?? new TextDecoder().decode(bytes);
     } catch {
       text = openText();
-      if (text === undefined) return [];
+      if (text === undefined) return empty;
     }
   }
+  // Refuse oversize scans BEFORE splitting or parsing: the refusal promise is
+  // that no unbounded work happens for a file text search cannot cover.
+  if (oversized(text)) return { nodes: [], lines: [], tooLargeForTextSearch: true };
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
   if (/\.grpc$/i.test(uri.path)) {
     const { requests } = parseGrpcFile(text);
-    return requests.map((r, i) => new GrpcRequestNode(uri, r, i));
+    return { nodes: requests.map((r, i) => new GrpcRequestNode(uri, r, i)), lines, tooLargeForTextSearch: false };
   }
   const { requests } = parseHttpFile(text);
-  return requests.map((r, i) => new RequestNode(uri, r, i));
+  return { nodes: requests.map((r, i) => new RequestNode(uri, r, i)), lines, tooLargeForTextSearch: false };
 }
 
 export type RequestsNode = FolderNode | FileNode | RequestNode | GrpcRequestNode | MessageNode;
