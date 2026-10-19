@@ -6,7 +6,7 @@ import { parseTagList } from '../core/tags.js';
 /**
  * Tree view backing "Reqit Requests".
  *
- * Scope: `.requests/` (recursive) under the first workspace folder.
+ * Scope: `.requests/` (recursive) under each approved VS Code workspace folder.
  * Grouping: subfolders are folder nodes, `.http` files are file nodes, each
  * file expands into its parsed requests (using `### name` when present).
  */
@@ -126,16 +126,32 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
   }
 
   async getChildren(node?: RequestsNode): Promise<RequestsNode[]> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) return [];
-    const root = vscode.Uri.joinPath(folder.uri, '.requests');
-
+    const folders = vscode.workspace.workspaceFolders ?? [];
     if (!node) {
-      if (!(await dirExists(root))) {
-        return [new MessageNode('Run "Reqit: Init Workspace" to create .requests/')];
+      if (folders.length === 0) {
+        return [new MessageNode('Open a workspace folder, then run "Reqit: Init Workspace"')];
       }
-      return listDir(root);
+      if (folders.length > 1) {
+        return folders.map((folder) => new WorkspaceNode(folder.name, folder.uri));
+      }
+      const root = vscode.Uri.joinPath(folders[0].uri, '.requests');
+      return (await dirExists(root))
+        ? listDir(root)
+        : [new MessageNode('Run "Reqit: Init Workspace" to create .requests/')];
     }
+    if (node.kind === 'workspace') {
+      if (!folders.some((folder) => folder.uri.toString() === node.uri.toString())) return [];
+      const root = vscode.Uri.joinPath(node.uri, '.requests');
+      return (await dirExists(root))
+        ? listDir(root)
+        : [new MessageNode('Run "Reqit: Init Workspace" to create .requests/')];
+    }
+    if (node.kind === 'message') return [];
+    // ponytail: URI containment rejects stale tree nodes, not symlink swaps at final I/O.
+    if (!folders.some((folder) =>
+      node.uri.scheme === folder.uri.scheme &&
+      node.uri.authority === folder.uri.authority &&
+      node.uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`))) return [];
     if (node.kind === 'folder') {
       return listDir(node.uri);
     }
@@ -325,7 +341,17 @@ async function parseFileRequests(
   return { nodes: requests.map((r, i) => new RequestNode(uri, r, i)), lines, tooLargeForTextSearch: false };
 }
 
-export type RequestsNode = FolderNode | FileNode | RequestNode | GrpcRequestNode | MessageNode;
+export type RequestsNode = WorkspaceNode | FolderNode | FileNode | RequestNode | GrpcRequestNode | MessageNode;
+
+class WorkspaceNode {
+  readonly kind = 'workspace' as const;
+  constructor(readonly label: string, readonly uri: vscode.Uri) {}
+  toTreeItem(): vscode.TreeItem {
+    const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.Collapsed);
+    item.iconPath = vscode.ThemeIcon.Folder;
+    return item;
+  }
+}
 
 class FolderNode {
   readonly kind = 'folder' as const;

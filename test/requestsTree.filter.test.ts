@@ -11,9 +11,12 @@ const host = vi.hoisted(() => ({
   showInputBox: vi.fn(),
   registerCommand: vi.fn(),
   createTreeView: vi.fn(),
+  createFileSystemWatcher: vi.fn(() => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} })),
   onDidChangeTextDocument: vi.fn(),
   onDidCloseTextDocument: vi.fn(),
+  onDidChangeWorkspaceFolders: vi.fn(),
   textDocuments: [] as { uri: { toString(): string }; getText(): string }[],
+  workspaceFolders: [{ name: 'first', path: '/workspace' }] as { name: string; path: string }[],
 }));
 vi.mock('vscode', () => {
   class Uri {
@@ -47,7 +50,12 @@ vi.mock('vscode', () => {
       event = vi.fn();
       fire = host.fire;
     },
-    RelativePattern: class {},
+    RelativePattern: class {
+      readonly base: string;
+      constructor(folder: { uri: { path: string } }) {
+        this.base = folder.uri.path;
+      }
+    },
     commands: { registerCommand: host.registerCommand },
     window: {
       showQuickPick: host.showQuickPick,
@@ -61,8 +69,11 @@ vi.mock('vscode', () => {
       },
       onDidChangeTextDocument: host.onDidChangeTextDocument,
       onDidCloseTextDocument: host.onDidCloseTextDocument,
-      createFileSystemWatcher: () => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} }),
-      workspaceFolders: [{ uri: new Uri('/workspace') }],
+      onDidChangeWorkspaceFolders: host.onDidChangeWorkspaceFolders,
+      createFileSystemWatcher: host.createFileSystemWatcher,
+      get workspaceFolders() {
+        return host.workspaceFolders.map(({ name, path }) => ({ name, uri: new Uri(path) }));
+      },
       fs: { readFile: host.readFile, readDirectory: host.readDirectory, stat: host.stat },
     },
   };
@@ -99,6 +110,10 @@ const source =
 
 beforeEach(() => {
   vi.resetAllMocks();
+  host.workspaceFolders = [{ name: 'first', path: '/workspace' }];
+  host.createFileSystemWatcher.mockImplementation(() => ({
+    onDidCreate() {}, onDidChange() {}, onDidDelete() {},
+  }));
   host.stat.mockResolvedValue({ type: 2 });
   host.readDirectory.mockResolvedValue([['items.http', 1]]);
   host.readFile.mockResolvedValue(new TextEncoder().encode(source));
@@ -223,6 +238,123 @@ describe('request explorer symlink discovery', () => {
     const provider = new RequestsTreeProvider();
     expect((await provider.getChildren()).map((node) => node.label)).toEqual(['real.http']);
     expect(host.readFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('request explorer multi-workspace roots', () => {
+  const multiSource = ['### Other', 'PUT https://example.test/other', ''].join(String.fromCharCode(10));
+
+  beforeEach(() => {
+    host.workspaceFolders = [
+      { name: 'first', path: '/workspace' },
+      { name: 'second', path: '/other' },
+    ];
+    host.readDirectory.mockImplementation(async (uri: { path: string }) =>
+      uri.path === '/other/.requests' ? [['other.http', 1]] : [['items.http', 1]],
+    );
+    host.readFile.mockImplementation(async (uri: { path: string }) =>
+      new TextEncoder().encode(
+        uri.path === '/other/.requests/other.http' ? multiSource : source,
+      ),
+    );
+  });
+
+  it('groups requests under one user-selected workspace node per root instead of hiding roots', async () => {
+    const provider = new RequestsTreeProvider();
+    const roots = await provider.getChildren();
+    expect(roots.map((node) => node.label)).toEqual(['first', 'second']);
+
+    const firstChildren = await provider.getChildren(roots[0]);
+    expect(firstChildren.map((node) => node.label)).toEqual(['items.http']);
+    const [firstFile] = firstChildren;
+    expect((await provider.getChildren(firstFile)).map((node) => node.label)).toEqual([
+      'List',
+      'Create',
+    ]);
+
+    const secondChildren = await provider.getChildren(roots[1]);
+    expect(secondChildren.map((node) => node.label)).toEqual(['other.http']);
+    const [secondFile] = secondChildren;
+    expect((await provider.getChildren(secondFile)).map((node) => node.label)).toEqual(['Other']);
+  });
+
+  it('keeps single-root trees flat so existing root behavior is unchanged', async () => {
+    host.workspaceFolders = [{ name: 'first', path: '/workspace' }];
+    const provider = new RequestsTreeProvider();
+    const children = await provider.getChildren();
+    expect(children.map((node) => node.label)).toEqual(['items.http']);
+  });
+
+  it('shows every root guidance without listing any unapproved path', async () => {
+    host.workspaceFolders = [];
+    const provider = new RequestsTreeProvider();
+    const children = await provider.getChildren();
+    expect(children.map((node) => node.label)).toEqual([
+      'Open a workspace folder, then run "Reqit: Init Workspace"',
+    ]);
+    expect(host.readDirectory).not.toHaveBeenCalled();
+  });
+
+  it('rejects stale tree nodes when their workspace root is removed', async () => {
+    const provider = new RequestsTreeProvider();
+    const roots = await provider.getChildren();
+    const files = await provider.getChildren(roots[1]);
+    host.workspaceFolders = [{ name: 'first', path: '/workspace' }];
+    host.readDirectory.mockClear();
+    host.readFile.mockClear();
+    expect(await provider.getChildren(roots[1])).toEqual([]);
+    expect(await provider.getChildren(files[0])).toEqual([]);
+    expect(host.readDirectory).not.toHaveBeenCalled();
+    expect(host.readFile).not.toHaveBeenCalled();
+  });
+
+  it('starts watching roots added after activation and stops watching removed roots', () => {
+    host.onDidChangeWorkspaceFolders.mockReturnValue({ dispose() {} });
+    host.createTreeView.mockReturnValue({});
+    const watchers: { dispose: ReturnType<typeof vi.fn> }[] = [];
+    host.createFileSystemWatcher.mockImplementation(() => {
+      const watcher = {
+        onDidCreate() {}, onDidChange() {}, onDidDelete() {}, dispose: vi.fn(),
+      };
+      watchers.push(watcher);
+      return watcher;
+    });
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    expect(host.createFileSystemWatcher).toHaveBeenCalledTimes(2);
+    const onFolders = host.onDidChangeWorkspaceFolders.mock.calls[0]?.[0];
+    host.workspaceFolders = [{ name: 'second', path: '/other' }, { name: 'third', path: '/third' }];
+    onFolders();
+    expect(watchers[0].dispose).toHaveBeenCalledOnce();
+    expect(watchers[1].dispose).not.toHaveBeenCalled();
+    expect(host.createFileSystemWatcher.mock.calls.map(([pattern]) => pattern.base)).toEqual([
+      '/workspace', '/other', '/third',
+    ]);
+  });
+
+  it('refreshes the tree when any approved root changes on disk', () => {
+    host.createFileSystemWatcher.mockClear();
+    host.onDidChangeTextDocument.mockReturnValue({ dispose() {} });
+    host.onDidCloseTextDocument.mockReturnValue({ dispose() {} });
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    // One watcher per approved workspace root, never for unapproved paths.
+    const watched = host.createFileSystemWatcher.mock.calls.map(
+      ([pattern]) => pattern.base,
+    );
+    expect(watched).toEqual(['/workspace', '/other']);
+    const onChange = host.onDidChangeTextDocument.mock.calls[0]?.[0];
+    host.fire.mockClear();
+    onChange({
+      document: { uri: { path: '/other/.requests/other.http', scheme: 'file', authority: '' } },
+      contentChanges: [{}],
+    });
+    expect(host.fire).toHaveBeenCalledTimes(1);
+    host.fire.mockClear();
+    onChange({
+      document: { uri: { path: '/outside/.requests/x.http', scheme: 'file', authority: '' } },
+      contentChanges: [{}],
+    });
+    expect(host.fire).not.toHaveBeenCalled();
   });
 });
 

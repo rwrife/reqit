@@ -67,6 +67,9 @@ vi.mock('vscode', () => {
     workspace: {
       createFileSystemWatcher: () => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} }),
       workspaceFolders: undefined,
+      onDidChangeTextDocument: () => ({ dispose() {} }),
+      onDidCloseTextDocument: () => ({ dispose() {} }),
+      onDidChangeWorkspaceFolders: () => ({ dispose() {} }),
       openTextDocument: host.openTextDocument,
       fs: {
         readFile: vi.fn(),
