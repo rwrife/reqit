@@ -133,31 +133,57 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(envManager);
   void envManager.init();
 
-  // Watch .requests/ for changes to keep the tree fresh, without polling.
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder) {
-    const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(folder, '.requests/**/*.{http,grpc}'),
+  // Watch each user-approved workspace root without polling; track folder changes.
+  const watchers = new Map<string, vscode.FileSystemWatcher>();
+  const syncWatchers = (): void => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const current = new Set(folders.map((folder) => folder.uri.toString()));
+    for (const [key, watcher] of watchers) {
+      if (!current.has(key)) {
+        watcher.dispose();
+        watchers.delete(key);
+      }
+    }
+    for (const folder of folders) {
+      const key = folder.uri.toString();
+      if (watchers.has(key)) continue;
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folder, '.requests/**/*.{http,grpc}'),
+      );
+      watcher.onDidCreate(() => treeProvider.refresh());
+      watcher.onDidChange(() => treeProvider.refresh());
+      watcher.onDidDelete(() => treeProvider.refresh());
+      watchers.set(key, watcher);
+    }
+  };
+  syncWatchers();
+  context.subscriptions.push({ dispose: () => {
+    for (const watcher of watchers.values()) watcher.dispose();
+    watchers.clear();
+  } });
+  const requestFile = (uri: vscode.Uri): boolean =>
+    /\.(http|grpc)$/i.test(uri.path) &&
+    (vscode.workspace.workspaceFolders ?? []).some(
+      (folder) =>
+        uri.scheme === folder.uri.scheme &&
+        uri.authority === folder.uri.authority &&
+        uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`),
     );
-    watcher.onDidCreate(() => treeProvider.refresh());
-    watcher.onDidChange(() => treeProvider.refresh());
-    watcher.onDidDelete(() => treeProvider.refresh());
-    context.subscriptions.push(watcher);
-    const requestFile = (uri: vscode.Uri): boolean =>
-      uri.scheme === folder.uri.scheme &&
-      uri.authority === folder.uri.authority &&
-      uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`) &&
-      /\.(http|grpc)$/i.test(uri.path);
-    context.subscriptions.push(
-      vscode.workspace.onDidChangeTextDocument((event) => {
-        if (event.contentChanges.length > 0 && requestFile(event.document.uri))
-          treeProvider.refresh();
-      }),
-      vscode.workspace.onDidCloseTextDocument((document) => {
-        if (requestFile(document.uri)) treeProvider.refresh();
-      }),
-    );
-  }
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.contentChanges.length > 0 && requestFile(event.document.uri))
+        treeProvider.refresh();
+    }),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      if (requestFile(document.uri)) treeProvider.refresh();
+    }),
+  );
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      syncWatchers();
+      treeProvider.refresh();
+    }),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('reqit.initWorkspace', async () => {
