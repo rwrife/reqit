@@ -35,13 +35,16 @@ const GITIGNORE = `.history/
 `;
 
 export async function initWorkspace(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
+  const folder = await selectInitFolder();
   if (!folder) {
-    vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
+      vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    }
     return;
   }
   const root = vscode.Uri.joinPath(folder.uri, '.requests');
-  // Hard guard: every write must resolve inside the workspace folder.
+  // ponytail: lexical write guard only; race-safe final-I/O confinement belongs to #56.
+  // Hard guard: every write must resolve inside the chosen workspace folder.
   const rootFsPath = folder.uri.fsPath;
   assertInsideWorkspace(rootFsPath, root.fsPath);
   await vscode.workspace.fs.createDirectory(root);
@@ -55,9 +58,25 @@ export async function initWorkspace(): Promise<void> {
     assertInsideWorkspace(rootFsPath, target.fsPath);
     await writeIfMissing(target, body);
   }
-  vscode.window.showInformationMessage('Reqit: .requests/ scaffolded.');
+  vscode.window.showInformationMessage(`Reqit: ${folder.name}/.requests/ scaffolded.`);
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'hello.http'));
   await vscode.window.showTextDocument(doc);
+}
+
+/**
+ * Re-check live workspace after picker resolves; removed roots must not receive writes.
+ */
+async function selectInitFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length <= 1) return folders[0];
+  const selected = await vscode.window.showQuickPick(
+    folders.map((folder) => ({ label: folder.name, description: folder.uri.fsPath, folder })),
+    { title: 'Choose Reqit workspace', placeHolder: 'Select a workspace folder for .requests/' },
+  );
+  if (!selected) return undefined;
+  return (vscode.workspace.workspaceFolders ?? []).find(
+    (folder) => folder.uri.toString() === selected.folder.uri.toString(),
+  );
 }
 
 async function writeIfMissing(uri: vscode.Uri, content: string): Promise<void> {
