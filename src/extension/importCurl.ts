@@ -1,18 +1,25 @@
 import * as vscode from 'vscode';
 import { parseCurl, renderImportedCurlAsHttp } from '../core/import/curl.js';
 import { assertInsideWorkspace } from '../core/pathGuard.js';
+import { chooseWorkspaceFolder } from './workspaceFolderChoice.js';
 
 /**
  * Command: `reqit: Import from cURL`.
  *
- * Prompts for a curl command, parses it (pure code in `src/core/import/curl.ts`),
- * suggests a filename, and writes the generated `.http` file into `.requests/`.
+ * Chooses the destination workspace before prompting for request data, parses
+ * the command (pure code in `src/core/import/curl.ts`), suggests a filename,
+ * and writes the generated `.http` file into `.requests/`.
  * Never overwrites an existing file without confirmation.
  */
 export async function importFromCurlCommand(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
+  const folder = await chooseWorkspaceFolder({
+    title: 'Reqit: choose cURL import destination',
+    placeHolder: 'Select where to save the imported request',
+  });
   if (!folder) {
-    vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
+      vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    }
     return;
   }
 

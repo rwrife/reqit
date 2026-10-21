@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { parse as parseYaml } from 'yaml';
 import { importOpenApi, type ImportedHttpFile } from '../core/import/openapi.js';
 import { assertInsideWorkspace } from '../core/pathGuard.js';
+import { chooseWorkspaceFolder } from './workspaceFolderChoice.js';
 
 /**
  * Command: `reqit: Import OpenAPI`.
@@ -15,9 +16,14 @@ import { assertInsideWorkspace } from '../core/pathGuard.js';
  * Never silently overwrites; warnings from the importer are surfaced.
  */
 export async function importFromOpenApiCommand(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
+  const folder = await chooseWorkspaceFolder({
+    title: 'Reqit: choose OpenAPI import destination',
+    placeHolder: 'Select where to save the imported requests',
+  });
   if (!folder) {
-    vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
+      vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    }
     return;
   }
 

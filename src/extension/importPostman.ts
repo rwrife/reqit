@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { importPostmanCollection, type ImportedHttpFile } from '../core/import/postman.js';
 import { assertInsideWorkspace } from '../core/pathGuard.js';
+import { chooseWorkspaceFolder } from './workspaceFolderChoice.js';
 
 /**
  * Command: `reqit: Import Postman Collection`.
@@ -13,9 +14,14 @@ import { assertInsideWorkspace } from '../core/pathGuard.js';
  * Never overwrites an existing file without explicit confirmation.
  */
 export async function importFromPostmanCommand(): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
+  const folder = await chooseWorkspaceFolder({
+    title: 'Reqit: choose Postman import destination',
+    placeHolder: 'Select where to save the imported collection',
+  });
   if (!folder) {
-    vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
+      vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
+    }
     return;
   }
 

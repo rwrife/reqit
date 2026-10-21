@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { assertInsideWorkspace } from '../core/pathGuard.js';
+import { chooseWorkspaceFolder } from './workspaceFolderChoice.js';
 import { SAMPLE_CHAIN_HTTP } from './sampleFiles.js';
 
 const SAMPLE_HTTP = `### hello
@@ -35,7 +36,10 @@ const GITIGNORE = `.history/
 `;
 
 export async function initWorkspace(): Promise<void> {
-  const folder = await selectInitFolder();
+  const folder = await chooseWorkspaceFolder({
+    title: 'Choose Reqit workspace',
+    placeHolder: 'Select a workspace folder for .requests/',
+  });
   if (!folder) {
     if ((vscode.workspace.workspaceFolders?.length ?? 0) === 0) {
       vscode.window.showErrorMessage('Reqit: open a workspace folder first.');
@@ -61,22 +65,6 @@ export async function initWorkspace(): Promise<void> {
   vscode.window.showInformationMessage(`Reqit: ${folder.name}/.requests/ scaffolded.`);
   const doc = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(root, 'hello.http'));
   await vscode.window.showTextDocument(doc);
-}
-
-/**
- * Re-check live workspace after picker resolves; removed roots must not receive writes.
- */
-async function selectInitFolder(): Promise<vscode.WorkspaceFolder | undefined> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  if (folders.length <= 1) return folders[0];
-  const selected = await vscode.window.showQuickPick(
-    folders.map((folder) => ({ label: folder.name, description: folder.uri.fsPath, folder })),
-    { title: 'Choose Reqit workspace', placeHolder: 'Select a workspace folder for .requests/' },
-  );
-  if (!selected) return undefined;
-  return (vscode.workspace.workspaceFolders ?? []).find(
-    (folder) => folder.uri.toString() === selected.folder.uri.toString(),
-  );
 }
 
 async function writeIfMissing(uri: vscode.Uri, content: string): Promise<void> {
