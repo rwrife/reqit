@@ -1189,6 +1189,43 @@ describe('request explorer method filter', () => {
     expect(view.description).toBeUndefined();
   });
 
+  it('favorites filter portable directives and composes with method search', async () => {
+    host.readFile.mockResolvedValue(new TextEncoder().encode(
+      '### Alpha\n# @favorite true\nGET https://example.test/alpha\n\n### Beta\n# @favorite true\nPOST https://example.test/beta\n\n### Gamma\n# @favorite false\nGET https://example.test/gamma\n\n### Delta\n# @favorite trueish\nGET https://example.test/delta\n',
+    ));
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    expect(provider.setFavoritesOnly(true)).toBe(true);
+    expect((await provider.getChildren(file)).map((n) => n.label)).toEqual(['Alpha', 'Beta']);
+    provider.setMethodFilter('POST');
+    expect((await provider.getChildren(file)).map((n) => n.label)).toEqual(['Beta']);
+    provider.setMethodFilter('DELETE');
+    expect((await provider.getChildren(file)).map((n) => n.label)).toEqual(['No requests match current filters']);
+    provider.setMethodFilter(undefined);
+    expect(provider.setFavoritesOnly(false)).toBe(true);
+    expect(await provider.getChildren(file)).toHaveLength(4);
+  });
+
+  it('wires favorites command into explorer without disclosing request data in descriptions', async () => {
+    const view = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(view);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.showFavorites');
+    expect(command).toBeDefined();
+    expect(manifest.contributes.menus['view/title']).toContainEqual({
+      command: 'reqit.showFavorites', when: 'view == reqit.requests', group: 'navigation',
+    });
+    const run: () => void = command![1];
+    run();
+    expect(view.description).toBe('Favorites only');
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((n) => n.label)).toEqual(['No requests match the favorites filter']);
+    run();
+    expect(view.description).toBeUndefined();
+    expect((await provider.getChildren(file)).map((n) => n.label)).toEqual(['List', 'Create']);
+  });
+
   it('keeps method and name-search indicators accurate as each filter changes', async () => {
     const view = { description: undefined as string | undefined };
     host.createTreeView.mockReturnValue(view);
