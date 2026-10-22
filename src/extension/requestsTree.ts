@@ -30,6 +30,18 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
   private urlSearchFilter: string | undefined;
   private tagSearchFilter: string | undefined;
   private textSearchFilter: string | undefined;
+  private favoritesOnly = false;
+
+  isFavoritesOnly(): boolean {
+    return this.favoritesOnly;
+  }
+
+  setFavoritesOnly(enabled: boolean): boolean {
+    if (this.favoritesOnly === enabled) return false;
+    this.favoritesOnly = enabled;
+    this.refresh();
+    return true;
+  }
 
   hasTextSearchFilter(): boolean {
     return this.textSearchFilter !== undefined;
@@ -167,6 +179,7 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
       const urlSearchFilter = this.urlSearchFilter;
       const tagSearchFilter = this.tagSearchFilter;
       const textSearchFilter = this.textSearchFilter;
+      const favoritesOnly = this.favoritesOnly;
       if (tooLargeForTextSearch) {
         return [new MessageNode('File too large for text search')];
       }
@@ -178,7 +191,9 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
             (request.kind === 'request' &&
               request.request.url.toLowerCase().includes(urlSearchFilter))) &&
           matchesTagFilter(request, tagSearchFilter) &&
-          matchesTextFilter(lines, request, textSearchFilter),
+          matchesTextFilter(lines, request, textSearchFilter) &&
+          (!favoritesOnly ||
+            (request.kind === 'request' && request.request.directives['favorite'] === 'true')),
       );
       return requests.length > 0 && filtered.length === 0
         ? [
@@ -189,6 +204,7 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
                 urlSearchFilter,
                 tagSearchFilter,
                 textSearchFilter,
+                favoritesOnly,
               ),
             ),
           ]
@@ -250,12 +266,13 @@ function noMatchMessage(
   urlSearchFilter: string | undefined,
   tagSearchFilter: string | undefined,
   textSearchFilter: string | undefined,
+  favoritesOnly: boolean,
 ): string {
-  if (
+  const active =
     [methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter, textSearchFilter].filter(
       (v) => v !== undefined,
-    ).length > 1
-  ) {
+    ).length + (favoritesOnly ? 1 : 0);
+  if (active > 1) {
     return 'No requests match current filters';
   }
   if (nameSearchFilter !== undefined) {
@@ -270,6 +287,7 @@ function noMatchMessage(
   if (textSearchFilter !== undefined) {
     return 'No requests match the active text search';
   }
+  if (favoritesOnly) return 'No requests match the favorites filter';
   return 'No requests match the method filter';
 }
 

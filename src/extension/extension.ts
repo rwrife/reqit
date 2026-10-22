@@ -126,6 +126,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (treeProvider.hasUrlSearchFilter()) parts.push('URL search active');
     if (treeProvider.hasTagSearchFilter()) parts.push('Tag search active');
     if (treeProvider.hasTextSearchFilter()) parts.push('Text search active');
+    if (treeProvider.isFavoritesOnly()) parts.push('Favorites only');
     treeView.description = parts.length > 0 ? parts.join(' • ') : undefined;
   };
 
@@ -203,6 +204,10 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('reqit.showFavorites', () => {
+      treeProvider.setFavoritesOnly(!treeProvider.isFavoritesOnly());
+      updateRequestsTreeDescription();
+    }),
     vscode.commands.registerCommand('reqit.filterRequests', async () => {
       const generation = ++filterPickerGeneration;
       const choices = [

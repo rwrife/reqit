@@ -131,6 +131,12 @@
         "category": "Reqit"
       },
       {
+        "command": "reqit.showFavorites",
+        "title": "Reqit: Show Favorite Requests",
+        "category": "Reqit",
+        "icon": "$(star)"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",
@@ -213,6 +219,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "reqit.showFavorites",
+          "when": "view == reqit.requests",
+          "group": "navigation"
+        },
         {
           "command": "reqit.filterRequests",
           "when": "view == reqit.requests",
