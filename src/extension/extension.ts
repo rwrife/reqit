@@ -35,6 +35,7 @@ import { importFromCurlCommand } from './importCurl.js';
 import { importFromPostmanCommand } from './importPostman.js';
 import { importFromOpenApiCommand } from './importOpenapi.js';
 import { REQUEST_NAME_SEARCH_MAX_LENGTH, RequestsTreeProvider } from './requestsTree.js';
+import { planFavoriteToggle } from '../core/favoriteToggle.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
@@ -204,6 +205,86 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('reqit.toggleFavoriteRequest', async (node?: unknown) => {
+      // Validate node structure and ensure it belongs to an approved workspace folder.
+      if (!treeProvider.isRequestNode(node)) {
+        vscode.window.showWarningMessage('Reqit: toggle a favorite from a request row in the Reqit explorer.');
+        return;
+      }
+      // Fail closed at final I/O against symlinks: leaf AND every ancestor
+      // directory below the approved `.requests/` root, so a cached row under
+      // `nested/` cannot have its parent swapped for a symlink pointing
+      // outside the workspace.
+      try {
+        const chain: typeof node.uri[] = [];
+        const folder = vscode.workspace.workspaceFolders?.find((f) =>
+          node.uri.scheme === f.uri.scheme &&
+          node.uri.authority === f.uri.authority &&
+          node.uri.path.startsWith(`${f.uri.path.replace(/\/$/, '')}/.requests/`),
+        );
+        if (!folder) return;
+        const rootPath = vscode.Uri.joinPath(folder.uri, '.requests').path;
+        let current = node.uri;
+        while (current.path.length > rootPath.length) {
+          chain.push(current);
+          current = current.with({ path: current.path.slice(0, current.path.lastIndexOf('/')) });
+        }
+        chain.push(current);
+        for (const target of chain) {
+          const stat = await vscode.workspace.fs.stat(target);
+          if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+            vscode.window.showWarningMessage(
+              'Reqit: cannot toggle favorite under a symbolic link; edit the real file directly.',
+            );
+            return;
+          }
+        }
+      } catch {
+        vscode.window.showWarningMessage('Reqit: request file is not accessible.');
+        return;
+      }
+      const doc = await vscode.workspace.openTextDocument(node.uri);
+      const docText = doc.getText();
+      const currentParsed = parseHttpFile(docText);
+      const currentReq = currentParsed.requests.find(
+        (r) => r.requestLineIndex === node.request.requestLineIndex,
+      );
+      // Require the request identity at that line to match the clicked row.
+      if (
+        !currentReq ||
+        currentReq.method !== node.request.method ||
+        currentReq.url !== node.request.url ||
+        currentReq.name !== node.request.name
+      ) {
+        vscode.window.showWarningMessage(
+          'Reqit: request in the document has changed since the explorer was refreshed; refresh and try again.',
+        );
+        return;
+      }
+      const plan = planFavoriteToggle(docText, node.request.requestLineIndex);
+      if (!plan) {
+        vscode.window.showWarningMessage(
+          'Reqit: cannot toggle this favorite from the explorer — edit its `# @favorite` directive in the file instead.',
+        );
+        return;
+      }
+      const edit = new vscode.WorkspaceEdit();
+      const range = new vscode.Range(
+        plan.edit.startLine,
+        0,
+        plan.edit.endLineExclusive,
+        0,
+      );
+      edit.replace(node.uri, range, plan.edit.newText);
+      const applied = await vscode.workspace.applyEdit(edit);
+      if (!applied) {
+        vscode.window.showErrorMessage('Reqit: favorite change was not applied.');
+        return;
+      }
+      // Reviewable by design: the `.requests/` file becomes dirty instead of
+      // being silently rewritten.
+      treeProvider.refresh();
+    }),
     vscode.commands.registerCommand('reqit.showFavorites', () => {
       treeProvider.setFavoritesOnly(!treeProvider.isFavoritesOnly());
       updateRequestsTreeDescription();

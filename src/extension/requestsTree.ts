@@ -133,6 +133,16 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
     this._onDidChange.fire(undefined);
   }
 
+  isRequestNode(node: unknown): node is Extract<RequestsNode, { kind: 'request' }> {
+    if (!(node instanceof RequestNode)) return false;
+    return (vscode.workspace.workspaceFolders ?? []).some(
+      (folder) =>
+        node.uri.scheme === folder.uri.scheme &&
+        node.uri.authority === folder.uri.authority &&
+        node.uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`),
+    );
+  }
+
   getTreeItem(node: RequestsNode): vscode.TreeItem {
     return node.toTreeItem();
   }
@@ -421,8 +431,11 @@ class RequestNode {
     const item = new vscode.TreeItem(this.label, vscode.TreeItemCollapsibleState.None);
     item.description = `${this.request.method}`;
     item.tooltip = `${this.request.method} request`;
-    item.iconPath = new vscode.ThemeIcon('symbol-event');
-    item.contextValue = 'reqit.request';
+    const favorite = this.request.directives['favorite'] === 'true';
+    // ponytail: star marks the portable `# @favorite true` directive state.
+    item.iconPath = new vscode.ThemeIcon(favorite ? 'star-full' : 'symbol-event');
+    // ponytail: distinct contextValue lets the inline toggle button match favorited rows too.
+    item.contextValue = favorite ? 'reqit.request.favorite' : 'reqit.request';
     item.command = {
       command: 'reqit.sendRequest',
       title: '▶ Send Request',

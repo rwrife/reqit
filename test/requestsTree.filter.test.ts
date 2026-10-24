@@ -9,12 +9,16 @@ const host = vi.hoisted(() => ({
   fire: vi.fn(),
   showQuickPick: vi.fn(),
   showInputBox: vi.fn(),
+  showWarningMessage: vi.fn(),
+  showErrorMessage: vi.fn(),
   registerCommand: vi.fn(),
   createTreeView: vi.fn(),
   createFileSystemWatcher: vi.fn(() => ({ onDidCreate() {}, onDidChange() {}, onDidDelete() {} })),
   onDidChangeTextDocument: vi.fn(),
   onDidCloseTextDocument: vi.fn(),
   onDidChangeWorkspaceFolders: vi.fn(),
+  openTextDocument: vi.fn(),
+  applyEdit: vi.fn(),
   textDocuments: [] as { uri: { toString(): string }; getText(): string }[],
   workspaceFolders: [{ name: 'first', path: '/workspace' }] as { name: string; path: string }[],
 }));
@@ -28,6 +32,12 @@ vi.mock('vscode', () => {
     }
     static joinPath(base: Uri, ...parts: string[]) {
       return new Uri([base.path, ...parts].join('/'));
+    }
+    with(change: { path?: string }) {
+      return new Uri(change.path !== undefined ? change.path : this.path);
+    }
+    static parse(value: string) {
+      return new Uri(value.replace(/^file:\/\//, ''));
     }
   }
   class ThemeIcon {
@@ -45,6 +55,15 @@ vi.mock('vscode', () => {
       ) {}
     },
     TreeItemCollapsibleState: { None: 0, Collapsed: 1 },
+    WorkspaceEdit: class {
+      replacements: { uri: Uri; text: string; range: unknown }[] = [];
+      replace(uri: Uri, range: unknown, text: string) {
+        this.replacements.push({ uri, range, text });
+      }
+    },
+    Range: class {
+      constructor(public startLine: number, public startCharacter: number, public endLine: number, public endCharacter: number) {}
+    },
     FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
     EventEmitter: class {
       event = vi.fn();
@@ -60,10 +79,14 @@ vi.mock('vscode', () => {
     window: {
       showQuickPick: host.showQuickPick,
       showInputBox: host.showInputBox,
+      showWarningMessage: host.showWarningMessage,
+      showErrorMessage: host.showErrorMessage,
       createTreeView: host.createTreeView,
     },
     languages: { registerCodeLensProvider: vi.fn() },
     workspace: {
+      openTextDocument: host.openTextDocument,
+      applyEdit: host.applyEdit,
       get textDocuments() {
         return host.textDocuments;
       },
@@ -1204,6 +1227,112 @@ describe('request explorer method filter', () => {
     provider.setMethodFilter(undefined);
     expect(provider.setFavoritesOnly(false)).toBe(true);
     expect(await provider.getChildren(file)).toHaveLength(4);
+  });
+
+  it('toggles a favorite when the row request still matches the document', async () => {
+    const initial = '### Alpha\nGET https://example.test/alpha\n\n### Beta\nPOST https://example.test/beta\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(initial));
+    host.createTreeView.mockReturnValue({});
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockImplementation(async (uri: { path: string }) => ({
+      uri,
+      getText: () => initial,
+    }));
+    host.applyEdit.mockResolvedValue(true);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [alpha, beta] = await provider.getChildren(file);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.toggleFavoriteRequest');
+    expect(command).toBeDefined();
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.toggleFavoriteRequest',
+      when: 'view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)',
+      group: 'inline',
+    });
+    await command![1](beta);
+    expect(host.applyEdit).toHaveBeenCalledOnce();
+    const edit = host.applyEdit.mock.calls[0][0];
+    expect(edit.replacements).toHaveLength(1);
+    expect(edit.replacements[0]).toMatchObject({
+      uri: { path: '/workspace/.requests/items.http' },
+      text: '# @favorite true\n',
+      range: { startLine: 4, startCharacter: 0, endLine: 4, endCharacter: 0 },
+    });
+    expect(alpha.toTreeItem().contextValue).toBe('reqit.request');
+  });
+
+  it('refuses a stale row whose line index now holds a different request', async () => {
+    const initial = '### Alpha\nGET https://example.test/alpha\n\n### Beta\nPOST https://example.test/beta\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(initial));
+    host.createTreeView.mockReturnValue({});
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockResolvedValue({
+      uri: { path: '/workspace/.requests/items.http' },
+      // The user reordered/edited the file: line 4 is now a different request.
+      getText: () => '### Alpha\nGET https://example.test/alpha\n\n### Beta\nGET https://example.test/gamma\n',
+    });
+    host.applyEdit.mockResolvedValue(true);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [, beta] = await provider.getChildren(file);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.toggleFavoriteRequest')!;
+    await command[1](beta);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    expect(host.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('changed'),
+    );
+  });
+
+  it('refuses a row whose file was replaced by a symlink outside the root', async () => {
+    const initial = '### Alpha\nGET https://example.test/alpha\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(initial));
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [alpha] = await provider.getChildren(file);
+    // The file became a symlink after the row was cached.
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 64 : 2 }));
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.toggleFavoriteRequest')!;
+    await command[1](alpha);
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('symbolic link'));
+  });
+
+  it('refuses a request row under an ancestor directory replaced by a symlink', async () => {
+    const initial = '### A\nGET https://example.test/a\n';
+    host.readDirectory.mockImplementation(async (uri: { path: string }) =>
+      uri.path === '/workspace/.requests'
+        ? [['nested', 2]]
+        : [['items.http', 1]],
+    );
+    host.readFile.mockResolvedValue(new TextEncoder().encode(initial));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('items.http') ? 1 : 2 }));
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [folder] = await provider.getChildren();
+    const [file] = await provider.getChildren(folder);
+    const [row] = await provider.getChildren(file);
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('/nested') ? 66 : 2 }));
+    host.openTextDocument.mockRejectedValue(new Error('must not reach document I/O through a symlink'));
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.toggleFavoriteRequest')!;
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('symbolic link'));
+  });
+
+  it('rejects forged row arguments and unrelated workspace paths without writing', async () => {
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.toggleFavoriteRequest');
+    expect(command).toBeDefined();
+    await command![1]({ uri: { path: '/outside/other.http' }, request: { requestLineIndex: 1 } });
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
   });
 
   it('wires favorites command into explorer without disclosing request data in descriptions', async () => {
