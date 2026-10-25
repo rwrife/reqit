@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js';
 import { parseTagList } from '../core/tags.js';
@@ -11,6 +12,15 @@ import { parseTagList } from '../core/tags.js';
  * file expands into its parsed requests (using `### name` when present).
  */
 export const REQUEST_NAME_SEARCH_MAX_LENGTH = 128;
+export const RECENT_REQUESTS_MAX_CAPACITY = 50;
+
+export interface RecentRequestAnchor {
+  readonly uriString: string;
+  readonly requestLineIndex: number;
+  readonly name?: string;
+  readonly method?: string;
+  readonly url?: string;
+}
 
 /**
  * Upper bound on the source length eligible for section text search
@@ -31,6 +41,83 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
   private tagSearchFilter: string | undefined;
   private textSearchFilter: string | undefined;
   private favoritesOnly = false;
+  private recentOnly = false;
+  // ponytail: keep at most 50 session anchors; no response/history persistence.
+  private readonly recent = new Map<string, string>();
+
+  private recentFingerprint(anchor: RecentRequestAnchor): string {
+    return createHash('sha256').update(JSON.stringify([
+      anchor.uriString, anchor.requestLineIndex, anchor.method, anchor.url, anchor.name,
+    ])).digest('hex');
+  }
+
+  private recentKey(uri: vscode.Uri, line: number): string {
+    return createHash('sha256').update(JSON.stringify([uri.toString(), line])).digest('hex');
+  }
+
+  isRecentOnly(): boolean {
+    return this.recentOnly;
+  }
+
+  setRecentOnly(enabled: boolean): boolean {
+    if (this.recentOnly === enabled) return false;
+    this.recentOnly = enabled;
+    this.refresh();
+    return true;
+  }
+
+  markRecent(node: unknown): boolean {
+    if (!(node instanceof RequestNode) || !this.isRequestNode(node)) return false;
+    return this.recordRecent({
+      uriString: node.uri.toString(),
+      requestLineIndex: node.request.requestLineIndex,
+      name: node.request.name,
+      method: node.request.method,
+      url: node.request.url,
+    });
+  }
+
+  recordRecent(anchor: RecentRequestAnchor): boolean {
+    if (
+      !Number.isSafeInteger(anchor.requestLineIndex) || anchor.requestLineIndex < 0 ||
+      typeof anchor.uriString !== 'string' || anchor.uriString.length > 4096 ||
+      !Number.isSafeInteger(anchor.uriString.length)
+    ) return false;
+    let uri: vscode.Uri;
+    try {
+      uri = vscode.Uri.parse(anchor.uriString);
+    } catch {
+      return false;
+    }
+    if (!/\.http$/i.test(uri.path) || !(vscode.workspace.workspaceFolders ?? []).some((folder) =>
+      uri.scheme === folder.uri.scheme &&
+      uri.authority === folder.uri.authority &&
+      uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`))) return false;
+    const key = this.recentKey(uri, anchor.requestLineIndex);
+    const fingerprint = this.recentFingerprint(anchor);
+    this.recent.delete(key);
+    this.recent.set(key, fingerprint);
+    if (this.recent.size > RECENT_REQUESTS_MAX_CAPACITY) this.recent.delete(this.recent.keys().next().value!);
+    // Only repaint while the recent view is on; recording while hidden must
+    // not churn the tree (a send-triggered refresh could re-enter rendering).
+    if (this.recentOnly) this.refresh();
+    return true;
+  }
+
+  isRecent(node: RequestsNode): boolean {
+    if (node.kind !== 'request') return false;
+    const key = this.recentKey(node.uri, node.request.requestLineIndex);
+    const expected = this.recent.get(key);
+    if (!expected) return false;
+    const actual = this.recentFingerprint({
+      uriString: node.uri.toString(),
+      requestLineIndex: node.request.requestLineIndex,
+      name: node.request.name,
+      method: node.request.method,
+      url: node.request.url,
+    });
+    return actual === expected;
+  }
 
   isFavoritesOnly(): boolean {
     return this.favoritesOnly;
@@ -190,6 +277,7 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
       const tagSearchFilter = this.tagSearchFilter;
       const textSearchFilter = this.textSearchFilter;
       const favoritesOnly = this.favoritesOnly;
+      const recentOnly = this.recentOnly;
       if (tooLargeForTextSearch) {
         return [new MessageNode('File too large for text search')];
       }
@@ -203,7 +291,8 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
           matchesTagFilter(request, tagSearchFilter) &&
           matchesTextFilter(lines, request, textSearchFilter) &&
           (!favoritesOnly ||
-            (request.kind === 'request' && request.request.directives['favorite'] === 'true')),
+            (request.kind === 'request' && request.request.directives['favorite'] === 'true')) &&
+          (!recentOnly || this.isRecent(request)),
       );
       return requests.length > 0 && filtered.length === 0
         ? [
@@ -215,6 +304,7 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
                 tagSearchFilter,
                 textSearchFilter,
                 favoritesOnly,
+                recentOnly,
               ),
             ),
           ]
@@ -277,11 +367,12 @@ function noMatchMessage(
   tagSearchFilter: string | undefined,
   textSearchFilter: string | undefined,
   favoritesOnly: boolean,
+  recentOnly: boolean,
 ): string {
   const active =
     [methodFilter, nameSearchFilter, urlSearchFilter, tagSearchFilter, textSearchFilter].filter(
       (v) => v !== undefined,
-    ).length + (favoritesOnly ? 1 : 0);
+    ).length + (favoritesOnly ? 1 : 0) + (recentOnly ? 1 : 0);
   if (active > 1) {
     return 'No requests match current filters';
   }
@@ -298,6 +389,7 @@ function noMatchMessage(
     return 'No requests match the active text search';
   }
   if (favoritesOnly) return 'No requests match the favorites filter';
+  if (recentOnly) return 'No requests match the recent filter';
   return 'No requests match the method filter';
 }
 
