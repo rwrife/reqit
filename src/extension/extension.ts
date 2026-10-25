@@ -128,6 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (treeProvider.hasTagSearchFilter()) parts.push('Tag search active');
     if (treeProvider.hasTextSearchFilter()) parts.push('Text search active');
     if (treeProvider.isFavoritesOnly()) parts.push('Favorites only');
+    if (treeProvider.isRecentOnly()) parts.push('Recent only');
     treeView.description = parts.length > 0 ? parts.join(' • ') : undefined;
   };
 
@@ -284,6 +285,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // Reviewable by design: the `.requests/` file becomes dirty instead of
       // being silently rewritten.
       treeProvider.refresh();
+    }),
+    vscode.commands.registerCommand('reqit.showRecent', () => {
+      treeProvider.setRecentOnly(!treeProvider.isRecentOnly());
+      updateRequestsTreeDescription();
     }),
     vscode.commands.registerCommand('reqit.showFavorites', () => {
       treeProvider.setFavoritesOnly(!treeProvider.isFavoritesOnly());
@@ -529,6 +534,15 @@ export function activate(context: vscode.ExtensionContext): void {
         if (parseDiags.length > 0) {
           vscode.window.showWarningMessage(`Reqit: ${parseDiags.map((d) => d.message).join('; ')}`);
         }
+        // Recent tracks only attempted validated source requests. No rendered URL,
+        // response, body, or secret value is stored; the provider holds hashes.
+        treeProvider.recordRecent({
+          uriString: doc.uri.toString(),
+          requestLineIndex: req.requestLineIndex,
+          name: req.name,
+          method: req.method,
+          url: req.url,
+        });
         await runRequest(context, req, envManager);
       },
     ),

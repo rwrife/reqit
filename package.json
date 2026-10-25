@@ -137,6 +137,12 @@
         "icon": "$(star)"
       },
       {
+        "command": "reqit.showRecent",
+        "title": "Reqit: Show Recent Requests",
+        "category": "Reqit",
+        "icon": "$(history)"
+      },
+      {
         "command": "reqit.toggleFavoriteRequest",
         "title": "Reqit: Toggle Favorite Request",
         "category": "Reqit",
@@ -225,6 +231,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "reqit.showRecent",
+          "when": "view == reqit.requests",
+          "group": "navigation"
+        },
         {
           "command": "reqit.showFavorites",
           "when": "view == reqit.requests",

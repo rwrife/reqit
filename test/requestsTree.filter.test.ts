@@ -143,6 +143,93 @@ beforeEach(() => {
   host.textDocuments = [];
 });
 
+describe('recent requests in explorer', () => {
+  it('shows only sent request rows while composing with method filter and never saving responses', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const [list, create] = await provider.getChildren(file);
+    expect(provider.markRecent(list)).toBe(true);
+    expect(provider.setRecentOnly(true)).toBe(true);
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List']);
+    provider.setMethodFilter('POST');
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'No requests match current filters',
+    ]);
+    provider.setMethodFilter(undefined);
+    expect(provider.markRecent(create)).toBe(true);
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List', 'Create']);
+  });
+
+  it('drops stale send anchors and bounds session-only memory', async () => {
+    const provider = new RequestsTreeProvider();
+    const [file] = await provider.getChildren();
+    const [list] = await provider.getChildren(file);
+    provider.markRecent(list);
+    provider.setRecentOnly(true);
+    host.readFile.mockResolvedValue(new TextEncoder().encode('### Changed\nGET https://example.test/changed\n'));
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'No requests match the recent filter',
+    ]);
+    for (let i = 0; i < 52; i++) {
+      expect(provider.recordRecent({
+        uriString: `file:///workspace/.requests/item-${i}.http`,
+        requestLineIndex: 1,
+        method: 'GET',
+        url: `https://example.test/${i}`,
+      })).toBe(true);
+    }
+    host.readFile.mockResolvedValue(new TextEncoder().encode(source));
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'No requests match the recent filter',
+    ]);
+    expect(provider.recordRecent({
+      uriString: 'file:///workspace/.requests/items.http',
+      requestLineIndex: 1,
+      name: 'List', method: 'GET', url: 'https://example.test/items',
+    })).toBe(true);
+    expect(provider.recordRecent({
+      uriString: 'file:///workspace/.requests/items.http',
+      requestLineIndex: 4,
+      name: 'Create', method: 'POST', url: 'https://example.test/items',
+    })).toBe(true);
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List', 'Create']);
+    provider.setRecentOnly(false);
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual(['List', 'Create']);
+    provider.setRecentOnly(true);
+    host.readFile.mockResolvedValue(new TextEncoder().encode('### Changed\nGET https://example.test/changed\n'));
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'No requests match the recent filter',
+    ]);
+  });
+
+  it('wires recent toggle and records only validated send targets without displaying URI or URL', async () => {
+    host.onDidChangeTextDocument.mockReturnValue({ dispose() {} });
+    host.onDidCloseTextDocument.mockReturnValue({ dispose() {} });
+    const treeView = { description: undefined as string | undefined };
+    host.createTreeView.mockReturnValue(treeView);
+    host.openTextDocument.mockResolvedValue({ getText: () => source });
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    expect(manifest.contributes.commands.some((c) => c.command === 'reqit.showRecent')).toBe(true);
+    expect(manifest.contributes.menus['view/title'].some((c) => c.command === 'reqit.showRecent')).toBe(true);
+    const recent = host.registerCommand.mock.calls.find(([id]) => id === 'reqit.showRecent')?.[1];
+    const send = host.registerCommand.mock.calls.find(([id]) => id === 'reqit.sendRequest')?.[1];
+    expect(recent).toBeTypeOf('function');
+    expect(send).toBeTypeOf('function');
+    recent();
+    expect(treeView.description).toBe('Recent only');
+    expect(host.fire).toHaveBeenCalled();
+    await send({ documentUri: 'file:///workspace/.requests/items.http', requestLineIndex: -1 });
+    expect(host.showErrorMessage).toHaveBeenCalledWith('Reqit: request not found at codelens position.');
+    const provider = host.createTreeView.mock.calls[0][1].treeDataProvider as RequestsTreeProvider;
+    const [file] = await provider.getChildren();
+    expect((await provider.getChildren(file)).map((node) => node.label)).toEqual([
+      'No requests match the recent filter',
+    ]);
+    expect(treeView.description).not.toContain('example.test');
+    expect(treeView.description).not.toContain('items.http');
+  });
+});
+
 describe('request explorer open editor consistency', () => {
   it('uses the unsaved editor text for explorer children and preserves send anchors', async () => {
     const provider = new RequestsTreeProvider();
