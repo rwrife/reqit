@@ -1422,6 +1422,59 @@ describe('request explorer method filter', () => {
     expect(host.applyEdit).not.toHaveBeenCalled();
   });
 
+  it('appends a reviewable request through a validated file row, without writing to disk', async () => {
+    const prior = '### Old\nGET https://example.test/old\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.openTextDocument.mockResolvedValue({ getText: () => prior, positionAt: () => ({ line: 2, character: 0 }) });
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.createTreeView.mockReturnValue({});
+    host.applyEdit.mockResolvedValue(true);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    expect(manifest.contributes.commands.some((c) => c.command === 'reqit.addRequest')).toBe(true);
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.addRequest', when: 'view == reqit.requests && viewItem == reqit.file', group: 'inline',
+    });
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.addRequest');
+    expect(command).toBeDefined();
+    await command![1](file);
+    expect(host.applyEdit).toHaveBeenCalledOnce();
+    expect(host.applyEdit.mock.calls[0][0].replacements[0]).toMatchObject({
+      uri: { path: '/workspace/.requests/items.http' },
+      text: '\n### New Request\nGET {{baseUrl}}/\n',
+      range: { startLine: 2, startCharacter: 0, endLine: 2, endCharacter: 0 },
+    });
+  });
+
+  it('rejects an intervening document edit instead of applying a stale insertion', async () => {
+    const prior = 'GET https://example.test/old\n';
+    const doc = { version: 1, getText: () => { doc.version = 2; return prior; }, positionAt: () => ({ line: 1, character: 0 }) };
+    host.openTextDocument.mockResolvedValue(doc);
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.addRequest')!;
+    await command[1](file);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('rejects forged file rows and symlink swaps before editor I/O', async () => {
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.addRequest')!;
+    await command[1]({ uri: { path: '/outside/items.http' }, kind: 'file' });
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    host.stat.mockResolvedValue({ type: 64 });
+    await command[1](file);
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
   it('wires favorites command into explorer without disclosing request data in descriptions', async () => {
     const view = { description: undefined as string | undefined };
     host.createTreeView.mockReturnValue(view);
