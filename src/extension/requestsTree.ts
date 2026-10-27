@@ -230,6 +230,16 @@ export class RequestsTreeProvider implements vscode.TreeDataProvider<RequestsNod
     );
   }
 
+  isFileNode(node: unknown): node is Extract<RequestsNode, { kind: 'file' }> {
+    if (!(node instanceof FileNode)) return false;
+    return (vscode.workspace.workspaceFolders ?? []).some(
+      (folder) =>
+        node.uri.scheme === folder.uri.scheme &&
+        node.uri.authority === folder.uri.authority &&
+        node.uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`),
+    );
+  }
+
   getTreeItem(node: RequestsNode): vscode.TreeItem {
     return node.toTreeItem();
   }

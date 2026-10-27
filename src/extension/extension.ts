@@ -36,6 +36,7 @@ import { importFromPostmanCommand } from './importPostman.js';
 import { importFromOpenApiCommand } from './importOpenapi.js';
 import { REQUEST_NAME_SEARCH_MAX_LENGTH, RequestsTreeProvider } from './requestsTree.js';
 import { planFavoriteToggle } from '../core/favoriteToggle.js';
+import { planAppendRequest } from '../core/appendRequest.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
@@ -206,6 +207,55 @@ export function activate(context: vscode.ExtensionContext): void {
       treeProvider.refresh();
     }),
     vscode.commands.registerCommand('reqit.refreshRequests', () => treeProvider.refresh()),
+    vscode.commands.registerCommand('reqit.addRequest', async (node?: unknown) => {
+      if (!treeProvider.isFileNode(node) || !/\.http$/i.test(node.uri.path)) return;
+      // VS Code WorkspaceEdit keeps the canonical file dirty, reviewable and undoable.
+      // This is not race-safe no-follow final-I/O confinement; #56 still tracks that gate.
+      try {
+        const folder = vscode.workspace.workspaceFolders?.find((f) =>
+          node.uri.scheme === f.uri.scheme &&
+          node.uri.authority === f.uri.authority &&
+          node.uri.path.startsWith(`${f.uri.path.replace(/\/$/, '')}/.requests/`),
+        );
+        if (!folder) return;
+        const rootPath = vscode.Uri.joinPath(folder.uri, '.requests').path;
+        let current = node.uri;
+        while (current.path.length >= rootPath.length) {
+          const stat = await vscode.workspace.fs.stat(current);
+          if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+            vscode.window.showWarningMessage('Reqit: cannot add a request through a symbolic link.');
+            return;
+          }
+          if (current.path === rootPath) break;
+          current = current.with({ path: current.path.slice(0, current.path.lastIndexOf('/')) });
+        }
+        const doc = await vscode.workspace.openTextDocument(node.uri);
+        const version = doc.version;
+        const plan = planAppendRequest(doc.getText());
+        if (doc.version !== version) {
+          vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+          return;
+        }
+        if (!plan) {
+          vscode.window.showWarningMessage('Reqit: request file is too large or invalid for an append.');
+          return;
+        }
+        const edit = new vscode.WorkspaceEdit();
+        const end = doc.positionAt(plan.offset);
+        edit.replace(node.uri, new vscode.Range(end.line, end.character, end.line, end.character), plan.text);
+        if (doc.version !== version) {
+          vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+          return;
+        }
+        if (!await vscode.workspace.applyEdit(edit)) {
+          vscode.window.showErrorMessage('Reqit: request was not added.');
+          return;
+        }
+        treeProvider.refresh();
+      } catch {
+        vscode.window.showWarningMessage('Reqit: request file is not accessible.');
+      }
+    }),
     vscode.commands.registerCommand('reqit.toggleFavoriteRequest', async (node?: unknown) => {
       // Validate node structure and ensure it belongs to an approved workspace folder.
       if (!treeProvider.isRequestNode(node)) {

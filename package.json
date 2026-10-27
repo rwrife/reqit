@@ -149,6 +149,12 @@
         "icon": "$(star-full)"
       },
       {
+        "command": "reqit.addRequest",
+        "title": "Reqit: Add Request to File",
+        "category": "Reqit",
+        "icon": "$(add)"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",
@@ -273,6 +279,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "reqit.addRequest",
+          "when": "view == reqit.requests && viewItem == reqit.file",
+          "group": "inline"
+        },
         {
           "command": "reqit.toggleFavoriteRequest",
           "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
