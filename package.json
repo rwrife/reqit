@@ -155,6 +155,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "reqit.renameRequest",
+        "title": "Reqit: Rename Request",
+        "category": "Reqit",
+        "icon": "$(edit)"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",
@@ -286,6 +292,11 @@
         },
         {
           "command": "reqit.toggleFavoriteRequest",
+          "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
+          "group": "inline"
+        },
+        {
+          "command": "reqit.renameRequest",
           "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
           "group": "inline"
         }
