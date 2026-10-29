@@ -1447,6 +1447,51 @@ describe('request explorer method filter', () => {
     });
   });
 
+  it('renames a named explorer request in one undoable document edit', async () => {
+    const prior = '### Old\nGET https://example.test/old\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockResolvedValue({ version: 1, getText: () => prior, lineAt: () => ({ range: { startLine: 0, endLine: 0 } }) });
+    host.showInputBox.mockResolvedValue('New');
+    host.applyEdit.mockResolvedValue(true);
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    expect(manifest.contributes.commands.some((c) => c.command === 'reqit.renameRequest')).toBe(true);
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.renameRequest', when: 'view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)', group: 'inline',
+    });
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.renameRequest')!;
+    await command[1](row);
+    expect(host.applyEdit).toHaveBeenCalledOnce();
+    expect(host.applyEdit.mock.calls[0][0].replacements).toEqual([{
+      uri: expect.objectContaining({ path: '/workspace/.requests/items.http' }), range: { startLine: 0, endLine: 0 }, text: '### New',
+    }]);
+  });
+
+  it('rejects a stale rename or symlink swap before editing', async () => {
+    const prior = '### Old\nGET https://example.test/old\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockResolvedValue({ version: 1, getText: () => prior.replace('example.test/old', 'example.test/changed') });
+    host.showInputBox.mockResolvedValue('New');
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.renameRequest')!;
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    host.openTextDocument.mockClear();
+    host.stat.mockResolvedValue({ type: 64 });
+    await command[1](row);
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
   it('rejects an intervening document edit instead of applying a stale insertion', async () => {
     const prior = 'GET https://example.test/old\n';
     const doc = { version: 1, getText: () => { doc.version = 2; return prior; }, positionAt: () => ({ line: 1, character: 0 }) };
