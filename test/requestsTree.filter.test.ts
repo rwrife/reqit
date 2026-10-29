@@ -1447,6 +1447,58 @@ describe('request explorer method filter', () => {
     });
   });
 
+  it('duplicates a named HTTP row using one undoable edit, preserving only its section', async () => {
+    const prior = '### Old\r\nGET https://example.test/old\r\n\r\n### Next\r\nPOST https://example.test/next\r\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockResolvedValue({ version: 1, getText: () => prior, positionAt: (offset: number) => {
+      const lines = prior.slice(0, offset).split('\n');
+      return { line: lines.length - 1, character: lines.at(-1)!.length };
+    } });
+    host.applyEdit.mockResolvedValue(true);
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.duplicateRequest', when: 'view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)', group: 'inline',
+    });
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.duplicateRequest');
+    expect(command).toBeDefined();
+    await command![1](row);
+    expect(host.applyEdit).toHaveBeenCalledOnce();
+    expect(host.applyEdit.mock.calls[0][0].replacements).toEqual([{
+      uri: expect.objectContaining({ path: '/workspace/.requests/items.http' }),
+      range: { startLine: 3, startCharacter: 0, endLine: 3, endCharacter: 0 },
+      text: '### Old Copy\r\nGET https://example.test/old\r\n\r\n',
+    }]);
+  });
+
+  it('rejects forged, stale, symlinked and version-changed duplicate rows without edits', async () => {
+    const prior = '### Old\nGET /old\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.duplicateRequest')!;
+    await command[1]({ kind: 'request', uri: row.uri, request: row.request });
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    host.stat.mockResolvedValueOnce({ type: 64 });
+    await command[1](row);
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    host.openTextDocument.mockResolvedValueOnce({ version: 1, getText: () => prior.replace('/old', '/changed') });
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    const doc = { version: 1, getText: () => { doc.version = 2; return prior; } };
+    host.openTextDocument.mockResolvedValueOnce(doc);
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
   it('renames a named explorer request in one undoable document edit', async () => {
     const prior = '### Old\nGET https://example.test/old\n';
     host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
