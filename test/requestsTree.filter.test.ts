@@ -57,8 +57,12 @@ vi.mock('vscode', () => {
     TreeItemCollapsibleState: { None: 0, Collapsed: 1 },
     WorkspaceEdit: class {
       replacements: { uri: Uri; text: string; range: unknown }[] = [];
+      deletions: { uri: Uri; range: unknown }[] = [];
       replace(uri: Uri, range: unknown, text: string) {
         this.replacements.push({ uri, range, text });
+      }
+      delete(uri: Uri, range: unknown) {
+        this.deletions.push({ uri, range });
       }
     },
     Range: class {
@@ -1497,6 +1501,78 @@ describe('request explorer method filter', () => {
     host.openTextDocument.mockResolvedValueOnce(doc);
     await command[1](row);
     expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('deletes a confirmed named request with one undoable edit and no saved rewrite', async () => {
+    const prior = '### Old\r\nGET /old\r\n### Next\r\nGET /next\r\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.openTextDocument.mockResolvedValue({ version: 1, getText: () => prior, positionAt: (offset: number) => {
+      const lines = prior.slice(0, offset).split('\n');
+      return { line: lines.length - 1, character: lines.at(-1)!.length };
+    } });
+    host.showWarningMessage.mockResolvedValueOnce('Delete');
+    host.applyEdit.mockResolvedValue(true);
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.deleteRequest', when: 'view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)', group: 'inline',
+    });
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.deleteRequest')!;
+    await command[1](row);
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('Old'), { modal: true }, 'Delete');
+    expect(host.applyEdit).toHaveBeenCalledOnce();
+    expect(host.applyEdit.mock.calls[0][0].deletions).toEqual([{
+      uri: expect.objectContaining({ path: '/workspace/.requests/items.http' }),
+      range: { startLine: 0, startCharacter: 0, endLine: 2, endCharacter: 0 },
+    }]);
+  });
+
+  it('refuses canceled, forged, stale and symlinked deletion without editing', async () => {
+    const prior = '### Old\nGET /old\n';
+    host.readFile.mockResolvedValue(new TextEncoder().encode(prior));
+    host.stat.mockImplementation(async (uri: { path: string }) => ({ type: uri.path.endsWith('.http') ? 1 : 2 }));
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [file] = await provider.getChildren();
+    const [row] = await provider.getChildren(file);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.deleteRequest')!;
+    await command[1]({ kind: 'request', uri: row.uri, request: row.request });
+    expect(host.showWarningMessage).toHaveBeenCalledWith('Reqit: only named HTTP requests in the Reqit explorer can be deleted.');
+    host.showWarningMessage.mockClear();
+    host.stat.mockResolvedValueOnce({ type: 64 });
+    await command[1](row);
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('symbolic link'));
+    host.showWarningMessage.mockClear();
+    host.showWarningMessage.mockResolvedValueOnce(undefined);
+    await command[1](row);
+    expect(host.openTextDocument).not.toHaveBeenCalled();
+    host.showWarningMessage.mockResolvedValueOnce('Delete');
+    host.openTextDocument.mockResolvedValueOnce({ version: 1, getText: () => prior.replace('/old', '/changed') });
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    // Non-semantic comments must not disappear under a stale explorer row either.
+    host.showWarningMessage.mockResolvedValueOnce('Delete');
+    host.openTextDocument.mockResolvedValueOnce({ version: 1, getText: () => '### Old\n# newly added note\nGET /old\n' });
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    // Mid-edit document version change before applyEdit must fail closed.
+    host.showWarningMessage.mockResolvedValueOnce('Delete');
+    const racingDoc = {
+      version: 1,
+      getText: () => {
+        racingDoc.version = 2;
+        return prior;
+      },
+    };
+    host.openTextDocument.mockResolvedValueOnce(racingDoc);
+    await command[1](row);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('request file changed'));
   });
 
   it('renames a named explorer request in one undoable document edit', async () => {

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { HTTP_METHODS, parseHttpFile, type ParsedRequest } from '../core/parser.js';
 import { parseGrpcFile, type ParsedGrpcRequestWithRange } from '../core/grpc.js';
 import { parseTagList } from '../core/tags.js';
+import { hashRequestSections } from '../core/deleteRequest.js';
 
 /**
  * Tree view backing "Reqit Requests".
@@ -468,7 +469,12 @@ async function parseFileRequests(
     return { nodes: requests.map((r, i) => new GrpcRequestNode(uri, r, i)), lines, tooLargeForTextSearch: false };
   }
   const { requests } = parseHttpFile(text);
-  return { nodes: requests.map((r, i) => new RequestNode(uri, r, i)), lines, tooLargeForTextSearch: false };
+  const sectionHashes = hashRequestSections(text, requests);
+  return {
+    nodes: requests.map((r, i) => new RequestNode(uri, r, i, sectionHashes.get(r.requestLineIndex))),
+    lines,
+    tooLargeForTextSearch: false,
+  };
 }
 
 export type RequestsNode = WorkspaceNode | FolderNode | FileNode | RequestNode | GrpcRequestNode | MessageNode;
@@ -525,6 +531,8 @@ class RequestNode {
     readonly uri: vscode.Uri,
     readonly request: ParsedRequest,
     readonly index: number,
+    /** Raw-byte fingerprint of this section captured when the row was built. */
+    readonly sectionHash?: string,
   ) {
     // ponytail: unnamed requests show the method only; a URL can carry arbitrary secrets.
     this.label = request.name ?? `${request.method} request`;
