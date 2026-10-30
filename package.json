@@ -167,6 +167,12 @@
         "icon": "$(edit)"
       },
       {
+        "command": "reqit.deleteRequest",
+        "title": "Reqit: Delete Request",
+        "category": "Reqit",
+        "icon": "$(trash)"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",
@@ -308,6 +314,11 @@
         },
         {
           "command": "reqit.renameRequest",
+          "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
+          "group": "inline"
+        },
+        {
+          "command": "reqit.deleteRequest",
           "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
           "group": "inline"
         }

@@ -39,6 +39,7 @@ import { planFavoriteToggle } from '../core/favoriteToggle.js';
 import { planAppendRequest } from '../core/appendRequest.js';
 import { planRenameRequest } from '../core/renameRequest.js';
 import { planDuplicateRequest } from '../core/duplicateRequest.js';
+import { planDeleteRequest } from '../core/deleteRequest.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
@@ -303,6 +304,65 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (!await vscode.workspace.applyEdit(edit)) {
           vscode.window.showErrorMessage('Reqit: duplicate was not applied.');
+          return;
+        }
+        treeProvider.refresh();
+      } catch {
+        vscode.window.showWarningMessage('Reqit: request file is not accessible.');
+      }
+    }),
+    vscode.commands.registerCommand('reqit.deleteRequest', async (node?: unknown) => {
+      if (!treeProvider.isRequestNode(node) || !node.request.name || !/\.http$/i.test(node.uri.path)) {
+        vscode.window.showWarningMessage('Reqit: only named HTTP requests in the Reqit explorer can be deleted.');
+        return;
+      }
+      // VS Code WorkspaceEdit keeps the canonical file dirty, reviewable and undoable.
+      // This is not race-safe no-follow final-I/O confinement; #56 still tracks that gate.
+      try {
+        const folder = vscode.workspace.workspaceFolders?.find((f) =>
+          node.uri.scheme === f.uri.scheme &&
+          node.uri.authority === f.uri.authority &&
+          node.uri.path.startsWith(`${f.uri.path.replace(/\/$/, '')}/.requests/`),
+        );
+        if (!folder) return;
+        const rootPath = vscode.Uri.joinPath(folder.uri, '.requests').path;
+        let current = node.uri;
+        while (current.path.length >= rootPath.length) {
+          const stat = await vscode.workspace.fs.stat(current);
+          if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+            vscode.window.showWarningMessage('Reqit: cannot delete a request under a symbolic link.');
+            return;
+          }
+          if (current.path === rootPath) break;
+          current = current.with({ path: current.path.slice(0, current.path.lastIndexOf('/')) });
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          `Reqit: delete request “${node.request.name}” from this file? This can be undone in the editor.`,
+          { modal: true },
+          'Delete',
+        );
+        if (confirm !== 'Delete') return;
+        const doc = await vscode.workspace.openTextDocument(node.uri);
+        const version = doc.version;
+        const plan = planDeleteRequest(doc.getText(), node.request, node.sectionHash);
+        if (doc.version !== version) {
+          vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+          return;
+        }
+        if (!plan) {
+          vscode.window.showWarningMessage('Reqit: cannot delete request; file changed, invalid, or oversized.');
+          return;
+        }
+        const edit = new vscode.WorkspaceEdit();
+        const start = doc.positionAt(plan.offset);
+        const end = doc.positionAt(plan.offset + plan.length);
+        edit.delete(node.uri, new vscode.Range(start.line, start.character, end.line, end.character));
+        if (doc.version !== version) {
+          vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+          return;
+        }
+        if (!await vscode.workspace.applyEdit(edit)) {
+          vscode.window.showErrorMessage('Reqit: delete was not applied.');
           return;
         }
         treeProvider.refresh();
