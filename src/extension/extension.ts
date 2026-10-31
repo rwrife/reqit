@@ -40,6 +40,7 @@ import { planAppendRequest } from '../core/appendRequest.js';
 import { planRenameRequest } from '../core/renameRequest.js';
 import { planDuplicateRequest } from '../core/duplicateRequest.js';
 import { planDeleteRequest } from '../core/deleteRequest.js';
+import { planMoveRequest } from '../core/moveRequest.js';
 import { EnvManager } from './envManager.js';
 import { buildGrpcCodeLenses, parseGrpcFile } from '../core/grpc.js';
 
@@ -192,7 +193,62 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  const handleMove = async (node: unknown, direction: 'up' | 'down') => {
+    if (!treeProvider.isRequestNode(node) || !node.request.name || !/\.http$/i.test(node.uri.path)) {
+      vscode.window.showWarningMessage(`Reqit: only named HTTP requests in the Reqit explorer can be moved ${direction}.`);
+      return;
+    }
+    try {
+      const folder = vscode.workspace.workspaceFolders?.find((f) =>
+        node.uri.scheme === f.uri.scheme &&
+        node.uri.authority === f.uri.authority &&
+        node.uri.path.startsWith(`${f.uri.path.replace(/\/$/, '')}/.requests/`),
+      );
+      if (!folder) return;
+      const rootPath = vscode.Uri.joinPath(folder.uri, '.requests').path;
+      let current = node.uri;
+      while (current.path.length >= rootPath.length) {
+        const stat = await vscode.workspace.fs.stat(current);
+        if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+          vscode.window.showWarningMessage('Reqit: cannot move a request under a symbolic link.');
+          return;
+        }
+        if (current.path === rootPath) break;
+        current = current.with({ path: current.path.slice(0, current.path.lastIndexOf('/')) });
+      }
+      const doc = await vscode.workspace.openTextDocument(node.uri);
+      const version = doc.version;
+      const neighborHash = direction === 'up' ? node.previousSectionHash : node.nextSectionHash;
+      const plan = planMoveRequest(doc.getText(), node.request, node.sectionHash, direction, neighborHash);
+      if (doc.version !== version) {
+        vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+        return;
+      }
+      if (!plan) {
+        vscode.window.showWarningMessage(`Reqit: cannot move request ${direction}; boundary reached or file changed.`);
+        return;
+      }
+      const edit = new vscode.WorkspaceEdit();
+      const start = doc.positionAt(plan.offset);
+      const end = doc.positionAt(plan.offset + plan.length);
+      edit.replace(node.uri, new vscode.Range(start.line, start.character, end.line, end.character), plan.text);
+      if (doc.version !== version) {
+        vscode.window.showWarningMessage('Reqit: request file changed; retry the edit.');
+        return;
+      }
+      if (!await vscode.workspace.applyEdit(edit)) {
+        vscode.window.showErrorMessage(`Reqit: move ${direction} was not applied.`);
+        return;
+      }
+      treeProvider.refresh();
+    } catch {
+      vscode.window.showWarningMessage('Reqit: request file is not accessible.');
+    }
+  };
+
   context.subscriptions.push(
+    vscode.commands.registerCommand('reqit.moveRequestUp', (node?: unknown) => handleMove(node, 'up')),
+    vscode.commands.registerCommand('reqit.moveRequestDown', (node?: unknown) => handleMove(node, 'down')),
     vscode.commands.registerCommand('reqit.initWorkspace', async () => {
       await initWorkspace();
       treeProvider.refresh();
