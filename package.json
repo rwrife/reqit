@@ -173,6 +173,18 @@
         "icon": "$(trash)"
       },
       {
+        "command": "reqit.moveRequestUp",
+        "title": "Reqit: Move Request Up",
+        "category": "Reqit",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "reqit.moveRequestDown",
+        "title": "Reqit: Move Request Down",
+        "category": "Reqit",
+        "icon": "$(arrow-down)"
+      },
+      {
         "command": "reqit.refreshRequests",
         "title": "Reqit: Refresh Requests",
         "category": "Reqit",
@@ -321,6 +333,16 @@
           "command": "reqit.deleteRequest",
           "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
           "group": "inline"
+        },
+        {
+          "command": "reqit.moveRequestUp",
+          "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
+          "group": "navigation"
+        },
+        {
+          "command": "reqit.moveRequestDown",
+          "when": "view == reqit.requests && (viewItem == reqit.request || viewItem == reqit.request.favorite)",
+          "group": "navigation"
         }
       ]
     }

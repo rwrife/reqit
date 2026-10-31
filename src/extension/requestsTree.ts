@@ -471,7 +471,11 @@ async function parseFileRequests(
   const { requests } = parseHttpFile(text);
   const sectionHashes = hashRequestSections(text, requests);
   return {
-    nodes: requests.map((r, i) => new RequestNode(uri, r, i, sectionHashes.get(r.requestLineIndex))),
+    nodes: requests.map((r, i) => new RequestNode(
+      uri, r, i, sectionHashes.get(r.requestLineIndex),
+      requests[i - 1] && sectionHashes.get(requests[i - 1].requestLineIndex),
+      requests[i + 1] && sectionHashes.get(requests[i + 1].requestLineIndex),
+    )),
     lines,
     tooLargeForTextSearch: false,
   };
@@ -531,8 +535,10 @@ class RequestNode {
     readonly uri: vscode.Uri,
     readonly request: ParsedRequest,
     readonly index: number,
-    /** Raw-byte fingerprint of this section captured when the row was built. */
+    /** Raw-byte fingerprints captured when the row was built. */
     readonly sectionHash?: string,
+    readonly previousSectionHash?: string,
+    readonly nextSectionHash?: string,
   ) {
     // ponytail: unnamed requests show the method only; a URL can carry arbitrary secrets.
     this.label = request.name ?? `${request.method} request`;
