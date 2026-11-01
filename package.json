@@ -149,6 +149,12 @@
         "icon": "$(star-full)"
       },
       {
+        "command": "reqit.createHttpFile",
+        "title": "Reqit: New Request File",
+        "category": "Reqit",
+        "icon": "$(new-file)"
+      },
+      {
         "command": "reqit.addRequest",
         "title": "Reqit: Add Request to File",
         "category": "Reqit",
@@ -309,6 +315,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "reqit.createHttpFile",
+          "when": "view == reqit.requests && viewItem == reqit.folder",
+          "group": "inline"
+        },
         {
           "command": "reqit.addRequest",
           "when": "view == reqit.requests && viewItem == reqit.file",
