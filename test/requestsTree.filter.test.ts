@@ -19,6 +19,8 @@ const host = vi.hoisted(() => ({
   onDidChangeWorkspaceFolders: vi.fn(),
   openTextDocument: vi.fn(),
   applyEdit: vi.fn(),
+  edits: [] as { creations: { path: string; options: unknown }[]; inserts: { path: string; text: string }[] }[],
+  showTextDocument: vi.fn(),
   textDocuments: [] as { uri: { toString(): string }; getText(): string }[],
   workspaceFolders: [{ name: 'first', path: '/workspace' }] as { name: string; path: string }[],
 }));
@@ -58,6 +60,14 @@ vi.mock('vscode', () => {
     WorkspaceEdit: class {
       replacements: { uri: Uri; text: string; range: unknown }[] = [];
       deletions: { uri: Uri; range: unknown }[] = [];
+      createFile(uri: Uri, options?: unknown) {
+        if (!host.edits[0]) host.edits.push({ creations: [], inserts: [] });
+        host.edits[0].creations.push({ path: uri.path, options });
+      }
+      insert(uri: Uri, _pos: unknown, text: string) {
+        if (!host.edits[0]) host.edits.push({ creations: [], inserts: [] });
+        host.edits[0].inserts.push({ path: uri.path, text });
+      }
       replace(uri: Uri, range: unknown, text: string) {
         this.replacements.push({ uri, range, text });
       }
@@ -67,6 +77,9 @@ vi.mock('vscode', () => {
     },
     Range: class {
       constructor(public startLine: number, public startCharacter: number, public endLine: number, public endCharacter: number) {}
+    },
+    Position: class {
+      constructor(public line: number, public character: number) {}
     },
     FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
     EventEmitter: class {
@@ -85,6 +98,7 @@ vi.mock('vscode', () => {
       showInputBox: host.showInputBox,
       showWarningMessage: host.showWarningMessage,
       showErrorMessage: host.showErrorMessage,
+      showTextDocument: host.showTextDocument,
       createTreeView: host.createTreeView,
     },
     languages: { registerCodeLensProvider: vi.fn() },
@@ -145,6 +159,85 @@ beforeEach(() => {
   host.readDirectory.mockResolvedValue([['items.http', 1]]);
   host.readFile.mockResolvedValue(new TextEncoder().encode(source));
   host.textDocuments = [];
+  host.edits = [];
+});
+
+describe('create local HTTP file from explorer', () => {
+  it('creates an undoable, non-overwriting file inside selected .requests/ folder', async () => {
+    host.readDirectory.mockResolvedValue([['nested', 2]]);
+    host.stat.mockResolvedValue({ type: 2 });
+    host.openTextDocument.mockResolvedValue({ uri: { toString: () => 'file:///workspace/.requests/nested/users.http' } });
+    host.applyEdit.mockResolvedValue(true);
+    host.showInputBox.mockResolvedValue('users');
+    host.createTreeView.mockReturnValue({});
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [folder] = await provider.getChildren();
+    expect(manifest.contributes.commands.some((c) => c.command === 'reqit.createHttpFile')).toBe(true);
+    expect(manifest.contributes.menus['view/item/context']).toContainEqual({
+      command: 'reqit.createHttpFile',
+      when: 'view == reqit.requests && viewItem == reqit.folder',
+      group: 'inline',
+    });
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.createHttpFile');
+    expect(command).toBeDefined();
+    await command![1](folder);
+    expect(host.edits[0].creations).toEqual([{
+      path: '/workspace/.requests/nested/users.http', options: { overwrite: false, ignoreIfExists: false },
+    }]);
+    expect(host.edits[0].inserts[0].text).toContain('GET {{baseUrl}}/');
+    expect(host.applyEdit).toHaveBeenCalledTimes(1);
+    expect(host.showTextDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects forged folder rows and symlink ancestors before applying edits', async () => {
+    host.createTreeView.mockReturnValue({});
+    host.showInputBox.mockResolvedValue('users');
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.createHttpFile')![1];
+    await command({ kind: 'folder', uri: { path: '/workspace/.requests/nested' } });
+    expect(host.applyEdit).not.toHaveBeenCalled();
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    host.readDirectory.mockResolvedValue([['nested', 2]]);
+    const [folder] = await provider.getChildren();
+    host.stat.mockImplementation(async (uri: { path: string }) => ({
+      type: uri.path === '/workspace/.requests' ? 66 : 2,
+    }));
+    await command(folder);
+    expect(host.showInputBox).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('rejects destination replacement while name prompt waits', async () => {
+    host.createTreeView.mockReturnValue({});
+    host.readDirectory.mockResolvedValue([['nested', 2]]);
+    let checks = 0;
+    host.stat.mockImplementation(async (uri: { path: string }) => ({
+      type: uri.path.endsWith('/nested') && ++checks > 1 ? 66 : 2,
+    }));
+    host.showInputBox.mockResolvedValue('users');
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [folder] = await provider.getChildren();
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.createHttpFile')![1];
+    await command(folder);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('never overwrites an existing file when VS Code declines the edit', async () => {
+    host.createTreeView.mockReturnValue({});
+    host.readDirectory.mockResolvedValue([['nested', 2]]);
+    host.showInputBox.mockResolvedValue('users');
+    host.applyEdit.mockResolvedValue(false);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const provider: RequestsTreeProvider = host.createTreeView.mock.calls[0][1].treeDataProvider;
+    const [folder] = await provider.getChildren();
+    const command = host.registerCommand.mock.calls.find(([name]) => name === 'reqit.createHttpFile')![1];
+    await command(folder);
+    expect(host.edits[0].creations[0].options).toEqual({ overwrite: false, ignoreIfExists: false });
+    expect(host.showTextDocument).not.toHaveBeenCalled();
+    expect(host.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('destination may already exist'));
+  });
 });
 
 describe('recent requests in explorer', () => {
