@@ -155,6 +155,12 @@
         "icon": "$(new-file)"
       },
       {
+        "command": "reqit.createRequestFolder",
+        "title": "Reqit: New Collection Folder",
+        "category": "Reqit",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "reqit.addRequest",
         "title": "Reqit: Add Request to File",
         "category": "Reqit",
@@ -317,6 +323,11 @@
       "view/item/context": [
         {
           "command": "reqit.createHttpFile",
+          "when": "view == reqit.requests && viewItem == reqit.folder",
+          "group": "inline"
+        },
+        {
+          "command": "reqit.createRequestFolder",
           "when": "view == reqit.requests && viewItem == reqit.folder",
           "group": "inline"
         },

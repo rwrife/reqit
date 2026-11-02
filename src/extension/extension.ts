@@ -32,6 +32,7 @@ import {
 import { requestToCurl } from '../core/curl.js';
 import { initWorkspace } from './initWorkspace.js';
 import { createHttpFile } from './createHttpFile.js';
+import { createRequestFolder } from './createRequestFolder.js';
 import { importFromCurlCommand } from './importCurl.js';
 import { importFromPostmanCommand } from './importPostman.js';
 import { importFromOpenApiCommand } from './importOpenapi.js';
@@ -251,6 +252,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('reqit.moveRequestUp', (node?: unknown) => handleMove(node, 'up')),
     vscode.commands.registerCommand('reqit.moveRequestDown', (node?: unknown) => handleMove(node, 'down')),
     vscode.commands.registerCommand('reqit.createHttpFile', (node?: unknown) => createHttpFile(treeProvider, node)),
+    vscode.commands.registerCommand('reqit.createRequestFolder', (node?: unknown) => createRequestFolder(treeProvider, node)),
     vscode.commands.registerCommand('reqit.initWorkspace', async () => {
       await initWorkspace();
       treeProvider.refresh();
