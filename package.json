@@ -161,6 +161,12 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "reqit.createCollectionNotes",
+        "title": "Reqit: Add Folder Documentation",
+        "category": "Reqit",
+        "icon": "$(book)"
+      },
+      {
         "command": "reqit.addRequest",
         "title": "Reqit: Add Request to File",
         "category": "Reqit",
@@ -328,6 +334,11 @@
         },
         {
           "command": "reqit.createRequestFolder",
+          "when": "view == reqit.requests && viewItem == reqit.folder",
+          "group": "inline"
+        },
+        {
+          "command": "reqit.createCollectionNotes",
           "when": "view == reqit.requests && viewItem == reqit.folder",
           "group": "inline"
         },
