@@ -1,48 +1,19 @@
 import * as vscode from 'vscode';
 import { RequestsTreeProvider } from './requestsTree.js';
 
-/** Create a markdown documentation sidecar beside requests in a collection folder. */
+/** Prepare local collection notes without writing through an unconfined URI. */
 export async function createCollectionNotes(tree: RequestsTreeProvider, node?: unknown): Promise<void> {
   if (node === undefined || !tree.isFolderNode(node)) return;
-  const folder = (vscode.workspace.workspaceFolders ?? []).find((f) =>
-    node.uri.scheme === f.uri.scheme && node.uri.authority === f.uri.authority &&
-    node.uri.path.startsWith(`${f.uri.path.replace(/\/$/, '')}/.requests/`));
-  if (!folder) return;
-  const root = vscode.Uri.joinPath(folder.uri, '.requests');
-  const directory = node.uri;
-  const checkAncestors = async (): Promise<boolean> => {
-    let current = directory;
-    while (current.path.length >= root.path.length) {
-      const stat = await vscode.workspace.fs.stat(current);
-      if ((stat.type & vscode.FileType.Directory) === 0 ||
-          (stat.type & vscode.FileType.SymbolicLink) !== 0) return false;
-      if (current.path === root.path) return true;
-      current = current.with({ path: current.path.slice(0, current.path.lastIndexOf('/')) });
-    }
-    return false;
-  };
+  if (node.uri.scheme !== 'file' || !(vscode.workspace.workspaceFolders ?? []).some((folder) =>
+    folder.uri.scheme === 'file' && folder.uri.authority === node.uri.authority &&
+    node.uri.path.startsWith(`${folder.uri.path.replace(/\/$/, '')}/.requests/`))) return;
+  // ponytail: users save an untitled buffer themselves; automate creation only after
+  // the collection writer has handle-bound, no-follow final I/O (#56).
   try {
-    if (!await checkAncestors()) return;
-    if (!(vscode.workspace.workspaceFolders ?? []).some((f) => f.uri.toString() === folder.uri.toString())) return;
-    if (!await checkAncestors()) return;
-    const target = vscode.Uri.joinPath(directory, 'README.md');
-    try {
-      await vscode.workspace.fs.stat(target);
-      vscode.window.showWarningMessage('Reqit: collection notes already exist.');
-      return;
-    } catch (error) {
-      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'FileNotFound')) throw error;
-    }
-    const edit = new vscode.WorkspaceEdit();
-    edit.createFile(target, { overwrite: false, ignoreIfExists: false });
-    edit.insert(target, new vscode.Position(0, 0), '# Collection notes\n');
-    if (!await vscode.workspace.applyEdit(edit)) {
-      vscode.window.showWarningMessage('Reqit: collection notes not created; destination may already exist or have changed.');
-      return;
-    }
-    tree.refresh();
+    const document = await vscode.workspace.openTextDocument({ language: 'markdown', content: '# Collection notes\n' });
+    await vscode.window.showTextDocument(document);
+    vscode.window.showInformationMessage('Reqit: Use Save As to place README.md inside the chosen collection folder. Inspect the destination before saving.');
   } catch {
-    vscode.window.showWarningMessage('Reqit: request directory is not accessible.');
+    vscode.window.showWarningMessage('Reqit: could not open a collection notes template.');
   }
-  // ponytail: README.md stores folder docs locally in text; final-I/O race confinement is #56.
 }
