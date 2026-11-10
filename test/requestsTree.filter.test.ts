@@ -538,6 +538,69 @@ describe('request explorer multi-workspace roots', () => {
     ]);
   });
 
+  it('warns once when external change hits a dirty request editor and opens that editor on review', async () => {
+    const watchers: { change?: (uri: { path: string; scheme: string; authority: string; toString(): string }) => void; deletion?: (uri: { path: string; scheme: string; authority: string; toString(): string }) => void }[] = [];
+    host.createFileSystemWatcher.mockImplementation(() => {
+      const watcher: (typeof watchers)[number] = {};
+      watchers.push(watcher);
+      return {
+        onDidCreate() {},
+        onDidChange(callback: typeof watcher.change) { watcher.change = callback; },
+        onDidDelete(callback: typeof watcher.deletion) { watcher.deletion = callback; },
+        dispose() {},
+      };
+    });
+    host.createTreeView.mockReturnValue({});
+    host.showWarningMessage.mockResolvedValue('Review Editor');
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const uri = { path: '/other/.requests/other.http', scheme: 'file', authority: '', toString: () => 'file:///other/.requests/other.http' };
+    const document = { uri, isDirty: true, getText: () => source };
+    host.textDocuments = [document];
+    watchers[1].change!(uri);
+    watchers[1].change!(uri);
+    await vi.waitFor(() => expect(host.showWarningMessage).toHaveBeenCalledTimes(1));
+    expect(host.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('unsaved'), { modal: true }, 'Review Editor',
+    );
+    await vi.waitFor(() => expect(host.showTextDocument).toHaveBeenCalledWith(document));
+    const onClose = host.onDidCloseTextDocument.mock.calls[0]?.[0];
+    onClose(document);
+    watchers[1].change!(uri);
+    expect(host.showWarningMessage).toHaveBeenCalledTimes(2);
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it('ignores clean/outside files, rewarns after clean transition, and handles deletion without opening disk bytes', async () => {
+    let changed!: (uri: { path: string; scheme: string; authority: string; toString(): string }) => void;
+    let deleted!: typeof changed;
+    host.createFileSystemWatcher.mockImplementation(() => ({
+      onDidCreate() {},
+      onDidChange(callback: typeof changed) { changed = callback; },
+      onDidDelete(callback: typeof changed) { deleted = callback; },
+      dispose() {},
+    }));
+    host.createTreeView.mockReturnValue({});
+    host.showWarningMessage.mockResolvedValue(undefined);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const uri = { path: '/other/.requests/other.http', scheme: 'file', authority: '', toString: () => 'file:///other/.requests/other.http' };
+    const document = { uri, isDirty: false, getText: () => source };
+    host.textDocuments = [document];
+    changed(uri);
+    changed({ ...uri, path: '/outside/.requests/other.http', toString: () => 'file:///outside/.requests/other.http' });
+    expect(host.showWarningMessage).not.toHaveBeenCalled();
+    document.isDirty = true;
+    deleted(uri);
+    expect(host.showWarningMessage).toHaveBeenCalledTimes(1);
+    document.isDirty = false;
+    changed(uri);
+    document.isDirty = true;
+    changed(uri);
+    expect(host.showWarningMessage).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(host.showWarningMessage).toHaveBeenCalledTimes(2));
+    expect(host.readFile).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
   it('refreshes the tree when any approved root changes on disk', () => {
     host.createFileSystemWatcher.mockClear();
     host.onDidChangeTextDocument.mockReturnValue({ dispose() {} });
