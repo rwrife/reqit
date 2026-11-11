@@ -144,8 +144,31 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(envManager);
   void envManager.init();
 
+  // Warn once per dirty editor until it closes or a later disk event sees it clean.
+  const warnedExternalEdits = new Set<string>();
   // Watch each user-approved workspace root without polling; track folder changes.
   const watchers = new Map<string, vscode.FileSystemWatcher>();
+  const warnExternalEdit = (uri: vscode.Uri, root: vscode.WorkspaceFolder): void => {
+    if (uri.scheme !== root.uri.scheme || uri.authority !== root.uri.authority ||
+      !/\.(http|grpc)$/i.test(uri.path) ||
+      !uri.path.startsWith(`${root.uri.path.replace(/\/$/, '')}/.requests/`)) return;
+    const key = uri.toString();
+    const dirty = vscode.workspace.textDocuments.find((doc) => doc.uri.toString() === key && doc.isDirty);
+    if (!dirty) {
+      warnedExternalEdits.delete(key);
+      return;
+    }
+    if (warnedExternalEdits.has(key)) return;
+    warnedExternalEdits.add(key);
+    // ponytail: warn without reading or merging disk bytes; VS Code owns save conflicts.
+    void vscode.window.showWarningMessage(
+      'Reqit: external collection change detected while this request has unsaved edits. Review before saving; Reqit will not overwrite either version.',
+      { modal: true }, 'Review Editor',
+    ).then((action) => {
+      if (action === 'Review Editor' && vscode.workspace.textDocuments.includes(dirty))
+        return vscode.window.showTextDocument(dirty);
+    }).then(undefined, () => { /* Dismissal or editor closure must not reject event handler. */ });
+  };
   const syncWatchers = (): void => {
     const folders = vscode.workspace.workspaceFolders ?? [];
     const current = new Set(folders.map((folder) => folder.uri.toString()));
@@ -162,8 +185,8 @@ export function activate(context: vscode.ExtensionContext): void {
         new vscode.RelativePattern(folder, '.requests/**/*.{http,grpc}'),
       );
       watcher.onDidCreate(() => treeProvider.refresh());
-      watcher.onDidChange(() => treeProvider.refresh());
-      watcher.onDidDelete(() => treeProvider.refresh());
+      watcher.onDidChange((uri) => { warnExternalEdit(uri, folder); treeProvider.refresh(); });
+      watcher.onDidDelete((uri) => { warnExternalEdit(uri, folder); treeProvider.refresh(); });
       watchers.set(key, watcher);
     }
   };
@@ -186,6 +209,7 @@ export function activate(context: vscode.ExtensionContext): void {
         treeProvider.refresh();
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
+      warnedExternalEdits.delete(document.uri.toString());
       if (requestFile(document.uri)) treeProvider.refresh();
     }),
   );
