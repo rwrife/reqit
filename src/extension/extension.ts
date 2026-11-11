@@ -184,7 +184,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const watcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(folder, '.requests/**/*.{http,grpc}'),
       );
-      watcher.onDidCreate(() => treeProvider.refresh());
+      watcher.onDidCreate((uri) => { warnExternalEdit(uri, folder); treeProvider.refresh(); });
       watcher.onDidChange((uri) => { warnExternalEdit(uri, folder); treeProvider.refresh(); });
       watcher.onDidDelete((uri) => { warnExternalEdit(uri, folder); treeProvider.refresh(); });
       watchers.set(key, watcher);
