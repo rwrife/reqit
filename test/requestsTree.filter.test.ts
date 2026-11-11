@@ -570,6 +570,26 @@ describe('request explorer multi-workspace roots', () => {
     expect(host.applyEdit).not.toHaveBeenCalled();
   });
 
+  it('warns when an external create replaces a missing request while its editor has unsaved edits', () => {
+    let created!: (uri: { path: string; scheme: string; authority: string; toString(): string }) => void;
+    host.createFileSystemWatcher.mockImplementation(() => ({
+      onDidCreate(callback: typeof created) { created = callback; },
+      onDidChange() {},
+      onDidDelete() {},
+      dispose() {},
+    }));
+    host.createTreeView.mockReturnValue({});
+    host.showWarningMessage.mockResolvedValue(undefined);
+    activate({ subscriptions: [] } as unknown as ExtensionContext);
+    const uri = { path: '/other/.requests/other.http', scheme: 'file', authority: '', toString: () => 'file:///other/.requests/other.http' };
+    host.textDocuments = [{ uri, isDirty: true, getText: () => source }];
+    created(uri);
+    created(uri);
+    expect(host.showWarningMessage).toHaveBeenCalledTimes(1);
+    expect(host.readFile).not.toHaveBeenCalled();
+    expect(host.applyEdit).not.toHaveBeenCalled();
+  });
+
   it('ignores clean/outside files, rewarns after clean transition, and handles deletion without opening disk bytes', async () => {
     let changed!: (uri: { path: string; scheme: string; authority: string; toString(): string }) => void;
     let deleted!: typeof changed;
